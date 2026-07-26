@@ -473,6 +473,46 @@ class SecurityRegressionTests(unittest.TestCase):
             self.assertFalse((project / "src" / "third_party" / "library").exists())
         self.assertEqual(result.returncode, 2, result.stderr)
 
+    @unittest.skipIf(sys.platform.startswith("win"), "source symlink fixture is POSIX-specific")
+    def test_clone_filters_reject_a_symlink_when_its_target_is_excluded(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source = initialize_source(root)
+            source.joinpath("tests").mkdir()
+            source.joinpath("tests", "real.odin").write_text(
+                "package library\n",
+                encoding="utf-8",
+            )
+            source.joinpath("library.odin").symlink_to("tests/real.odin")
+            git(source, "add", ".")
+            git(source, "commit", "-m", "fixture")
+            git(source, "tag", "v1")
+            bare = create_bare_remote(root, source)
+            config = root / "gitconfig"
+            write_git_config(config, bare)
+            project = root / "project"
+            project.mkdir()
+            project.joinpath("odindeps.json").write_text(
+                json.dumps(
+                    clone_manifest(
+                        options={
+                            "git": {
+                                "clone": {
+                                    "includes": ["**/*.odin"],
+                                    "excludes": ["tests/**"],
+                                }
+                            }
+                        }
+                    )
+                ),
+                encoding="utf-8",
+            )
+
+            result = run_sync(project, git_environment(config))
+
+            self.assertFalse((project / "src" / "third_party" / "library").exists())
+        self.assertEqual(result.returncode, 5, result.stderr)
+
     def test_clone_resolves_a_non_default_remote_branch(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

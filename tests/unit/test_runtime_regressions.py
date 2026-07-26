@@ -19,7 +19,12 @@ odindeps = load_odindeps()
 
 class RuntimeValidationRegressionTests(unittest.TestCase):
     def test_clone_file_patterns_must_be_project_relative_posix_globs(self) -> None:
-        invalid_patterns = ("../*.odin", "/absolute/*.odin", r"src\*.odin")
+        invalid_patterns = (
+            "../*.odin",
+            "/absolute/*.odin",
+            r"src\*.odin",
+            "C:/outside/*.odin",
+        )
 
         for pattern in invalid_patterns:
             manifest = {

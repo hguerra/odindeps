@@ -146,6 +146,7 @@ def _clone_file_pattern(value: object, field: str) -> str:
     if (
         "\\" in pattern
         or pattern.startswith("/")
+        or re.match(r"^[A-Za-z]:", pattern)
         or any(part in ("", ".", "..") for part in pattern.split("/"))
     ):
         raise ValidationError(f"{field} must be a portable relative glob")
@@ -332,9 +333,14 @@ def _validate_snapshot_tree(root: Path, *, allow_metadata: bool = False) -> None
         target = os.readlink(path)
         if os.path.isabs(target):
             raise FilesystemError("dependency content contains an absolute symbolic link")
-        resolved_target = (path.parent / target).resolve()
+        try:
+            resolved_target = (path.parent / target).resolve()
+        except (OSError, RuntimeError):
+            raise FilesystemError("dependency content contains an invalid symbolic link") from None
         if resolved_target != resolved_root and resolved_root not in resolved_target.parents:
             raise FilesystemError("dependency content contains a symbolic link outside its snapshot")
+        if not resolved_target.exists():
+            raise FilesystemError("dependency content contains a dangling symbolic link")
 
 
 def _write_metadata(directory: Path, metadata: Mapping[str, object]) -> None:
@@ -476,6 +482,46 @@ def _clone_patterns(options: Mapping[str, object]) -> tuple[tuple[str, ...], tup
     return includes, excludes
 
 
+def _selected_clone_files(
+    root: Path,
+    includes: Sequence[str],
+    excludes: Sequence[str],
+) -> list[Path]:
+    selected: list[Path] = []
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(root).as_posix()
+        if includes and not any(_path_matches_pattern(relative, pattern) for pattern in includes):
+            continue
+        if any(_path_matches_pattern(relative, pattern) for pattern in excludes):
+            continue
+        selected.append(path)
+    return selected
+
+
+def _filter_clone_snapshot(
+    staged: Path,
+    staging_directory: Path,
+    dependency_name: str,
+    includes: Sequence[str],
+    excludes: Sequence[str],
+) -> Path:
+    selected = _selected_clone_files(staged, includes, excludes)
+    if not selected:
+        raise ValidationError(f"dependency {dependency_name!r} clone filters matched no files")
+    filtered = staging_directory / "filtered"
+    filtered.mkdir()
+    for path in selected:
+        target = filtered / path.relative_to(staged)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, target, follow_symlinks=False)
+    _validate_snapshot_tree(filtered)
+    shutil.rmtree(staged)
+    filtered.rename(staged)
+    return staged
+
+
 def _clone_dependency(dependency: Dependency, options: Mapping[str, object], destination: Path, force: bool) -> None:
     remote = derive_remote(dependency.git or "", options["transport"])
     includes, excludes = _clone_patterns(options)
@@ -511,23 +557,13 @@ def _clone_dependency(dependency: Dependency, options: Mapping[str, object], des
         shutil.rmtree(staged / ".git")
         _validate_snapshot_tree(staged)
         if includes or excludes:
-            selected = [
-                path
-                for path in staged.rglob("*")
-                if path.is_file()
-                and (not includes or any(_path_matches_pattern(path.relative_to(staged).as_posix(), pattern) for pattern in includes))
-                and not any(_path_matches_pattern(path.relative_to(staged).as_posix(), pattern) for pattern in excludes)
-            ]
-            if not selected:
-                raise ValidationError(f"dependency {dependency.name!r} clone filters matched no files")
-            filtered = Path(staging_directory) / "filtered"
-            filtered.mkdir()
-            for path in selected:
-                target = filtered / path.relative_to(staged)
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(path, target, follow_symlinks=False)
-            shutil.rmtree(staged)
-            filtered.rename(staged)
+            staged = _filter_clone_snapshot(
+                staged,
+                Path(staging_directory),
+                dependency.name,
+                includes,
+                excludes,
+            )
         _write_metadata(staged, metadata)
         if options["cache"]["mode"] == "symlink":
             cache_root = Path(os.path.expandvars(str(options["cache"]["directory"]))).expanduser()

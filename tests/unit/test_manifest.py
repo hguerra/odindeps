@@ -57,14 +57,26 @@ class ManifestTests(unittest.TestCase):
         git_pattern = definitions["git_dependency"]["properties"]["git"]["pattern"]
         revision_pattern = definitions["git_dependency"]["properties"]["rev"]["pattern"]
         destination_pattern = definitions["portable_path"]["pattern"]
+        clone_properties = definitions["git_options"]["properties"]["clone"]["properties"]
+        glob_pattern = definitions["portable_glob"]["pattern"]
 
         self.assertIsNone(re.fullmatch(git_pattern, "https://github.com/a/b"))
         self.assertIsNone(re.fullmatch(revision_pattern, "-bad"))
         self.assertIsNone(re.fullmatch(destination_pattern, "../outside"))
         self.assertIsNone(re.fullmatch(destination_pattern, "vendor\\outside"))
+        self.assertIsNone(re.fullmatch(destination_pattern, "C:/outside"))
         self.assertIsNotNone(re.fullmatch(git_pattern, "github.com/a/b"))
         self.assertIsNotNone(re.fullmatch(revision_pattern, "v1"))
         self.assertIsNotNone(re.fullmatch(destination_pattern, "src/third_party"))
+        for name in ("includes", "excludes"):
+            self.assertEqual(
+                clone_properties[name]["items"]["$ref"],
+                "#/$defs/portable_glob",
+            )
+            for invalid in ("../*.odin", "/absolute/*.odin", r"src\*.odin", "C:/outside/*.odin"):
+                with self.subTest(name=name, invalid=invalid):
+                    self.assertIsNone(re.fullmatch(glob_pattern, invalid))
+            self.assertIsNotNone(re.fullmatch(glob_pattern, "**/*.odin"))
 
     def test_minimal_manifest_normalizes_to_immutable_records(self) -> None:
         manifest = odindeps.parse_manifest({"schema_version": 1, "dependencies": {}})
