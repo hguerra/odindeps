@@ -1,0 +1,16 @@
+name: Feature request
+description: Describe a user problem before an implementation.
+labels: [feature]
+body:
+  - type: textarea
+    id: problem
+    attributes: {label: "Problem to solve"}
+    validations: {required: true}
+  - type: textarea
+    id: alternatives
+    attributes: {label: "Alternatives considered"}
+    validations: {required: true}
+  - type: textarea
+    id: scope
+    attributes: {label: "Observable behavior, platform scope, and non-goals"}
+    validations: {required: true}

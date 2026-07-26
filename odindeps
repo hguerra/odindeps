@@ -1,0 +1,865 @@
+#!/usr/bin/env python3
+"""Materialize explicitly declared Odin project dependencies."""
+
+from __future__ import annotations
+
+import argparse
+import fnmatch
+import hashlib
+from collections.abc import Sequence
+from dataclasses import dataclass
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import uuid
+from types import MappingProxyType
+from typing import Mapping
+
+
+VERSION = "0.1.0"
+
+BUILT_IN_DEFAULTS = {
+    "destination_root": "src/third_party",
+    "transport": "https",
+    "git": {"strategy": "clone", "subtree": {"squash": True}},
+    "cache": {"mode": "off", "directory": "~/.cache/odindeps"},
+    "local": {"strategy": "copy"},
+}
+DEPENDENCY_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
+
+
+class ValidationError(ValueError):
+    """An invalid user-facing manifest value."""
+
+    exit_code = 2
+
+
+class ConflictError(RuntimeError):
+    """An existing path cannot be safely replaced."""
+
+    exit_code = 3
+
+
+class FilesystemError(RuntimeError):
+    """A local filesystem action could not be completed."""
+
+    exit_code = 5
+
+
+class GitError(RuntimeError):
+    """A Git operation could not be completed."""
+
+    exit_code = 4
+
+
+class InternalError(RuntimeError):
+    """An unexpected failure that must not expose a traceback to users."""
+
+    exit_code = 70
+
+
+@dataclass(frozen=True)
+class Dependency:
+    """One validated Git or local-path dependency declaration."""
+
+    name: str
+    git: str | None
+    rev: str | None
+    path: str | None
+    options: Mapping[str, object]
+
+
+@dataclass(frozen=True)
+class Manifest:
+    """A validated, immutable schema-version-one manifest."""
+
+    schema_version: int
+    dependencies: Mapping[str, Dependency]
+    defaults: Mapping[str, object]
+
+
+def _freeze(value: object) -> object:
+    if isinstance(value, dict):
+        return MappingProxyType({key: _freeze(item) for key, item in value.items()})
+    if isinstance(value, list):
+        return tuple(_freeze(item) for item in value)
+    return value
+
+
+def _mapping(value: object, field: str) -> dict[str, object]:
+    if not isinstance(value, dict):
+        raise ValidationError(f"{field} must be an object")
+    return value
+
+
+def _unknown_fields(value: Mapping[str, object], allowed: set[str], field: str) -> None:
+    unknown = sorted(set(value) - allowed)
+    if unknown:
+        raise ValidationError(f"{field} contains unknown field {unknown[0]!r}")
+
+
+def _string(value: object, field: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise ValidationError(f"{field} must be a non-empty string")
+    if any(ord(character) < 32 or ord(character) == 127 for character in value):
+        raise ValidationError(f"{field} must not contain control characters")
+    return value
+
+
+def _destination_path(value: object, field: str) -> str:
+    path = _string(value, field)
+    if (
+        "\\" in path
+        or path.startswith("/")
+        or re.match(r"^[A-Za-z]:", path)
+        or any(part == ".." for part in path.split("/"))
+    ):
+        raise ValidationError(f"{field} must be a portable project-relative path")
+    return "/".join(part for part in path.split("/") if part not in ("", ".")) or "."
+
+
+def _git_locator(value: object, field: str) -> str:
+    locator = _string(value, field)
+    if any(token in locator for token in ("://", "@", "?", "#", "\\")) or locator.startswith("/"):
+        raise ValidationError(f"{field} must be a neutral host/owner/repository locator")
+    parts = locator.split("/")
+    if len(parts) < 3 or any(not part or part in (".", "..") for part in parts):
+        raise ValidationError(f"{field} must be a neutral host/owner/repository locator")
+    return locator
+
+
+def _revision(value: object, field: str) -> str:
+    revision = _string(value, field)
+    if revision.startswith("-"):
+        raise ValidationError(f"{field} must not start with '-'")
+    return revision
+
+
+def _clone_file_pattern(value: object, field: str) -> str:
+    pattern = _string(value, field)
+    if (
+        "\\" in pattern
+        or pattern.startswith("/")
+        or any(part in ("", ".", "..") for part in pattern.split("/"))
+    ):
+        raise ValidationError(f"{field} must be a portable relative glob")
+    return pattern
+
+
+def derive_remote(git: str, transport: str) -> str:
+    """Derive a credential-free Git remote from a neutral Git locator."""
+    normalized = _git_locator(git, "git").removesuffix(".git")
+    host, repository = normalized.split("/", 1)
+    if transport == "https":
+        return f"https://{host}/{repository}.git"
+    if transport == "ssh":
+        return f"git@{host}:{repository}.git"
+    raise ValidationError("transport must be 'https' or 'ssh'")
+
+
+def sanitize_git_error(_: str) -> str:
+    """Return a stable Git failure without exposing remote or credential text."""
+    return "Git command failed"
+
+
+def cache_key(git: str, commit: str, files: Sequence[str]) -> str:
+    """Return a stable cache identity for immutable clone content."""
+    encoded = json.dumps(
+        {"git": git.removesuffix(".git"), "commit": commit, "files": list(files)},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _normalized_git(git: str) -> str:
+    return git.removesuffix(".git")
+
+
+def _merge_options(base: Mapping[str, object], override: Mapping[str, object]) -> dict[str, object]:
+    merged = dict(base)
+    for key, value in override.items():
+        if isinstance(value, Mapping) and isinstance(merged.get(key), Mapping):
+            merged[key] = _merge_options(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _validate_options(value: object, field: str) -> Mapping[str, object]:
+    options = _mapping(value, field)
+    _unknown_fields(options, {"destination_root", "transport", "git", "cache", "local"}, field)
+    normalized: dict[str, object] = {}
+    if "destination_root" in options:
+        normalized["destination_root"] = _destination_path(
+            options["destination_root"], f"{field}.destination_root"
+        )
+    if "transport" in options:
+        transport = options["transport"]
+        if transport not in ("https", "ssh"):
+            raise ValidationError(f"{field}.transport must be 'https' or 'ssh'")
+        normalized["transport"] = transport
+    if "git" in options:
+        git = _mapping(options["git"], f"{field}.git")
+        _unknown_fields(git, {"strategy", "clone", "subtree"}, f"{field}.git")
+        parsed_git: dict[str, object] = {}
+        if "strategy" in git:
+            if git["strategy"] not in ("clone", "submodule", "subtree"):
+                raise ValidationError(f"{field}.git.strategy is invalid")
+            parsed_git["strategy"] = git["strategy"]
+        if "clone" in git:
+            clone = _mapping(git["clone"], f"{field}.git.clone")
+            _unknown_fields(clone, {"files"}, f"{field}.git.clone")
+            if "files" in clone:
+                files = clone["files"]
+                if not isinstance(files, list) or not files:
+                    raise ValidationError(f"{field}.git.clone.files must be a non-empty list of strings")
+                parsed_git["clone"] = {
+                    "files": [_clone_file_pattern(item, f"{field}.git.clone.files") for item in files]
+                }
+            else:
+                parsed_git["clone"] = {}
+        if "subtree" in git:
+            subtree = _mapping(git["subtree"], f"{field}.git.subtree")
+            _unknown_fields(subtree, {"squash"}, f"{field}.git.subtree")
+            if "squash" in subtree and type(subtree["squash"]) is not bool:
+                raise ValidationError(f"{field}.git.subtree.squash must be a boolean")
+            parsed_git["subtree"] = dict(subtree)
+        normalized["git"] = parsed_git
+    if "cache" in options:
+        cache = _mapping(options["cache"], f"{field}.cache")
+        _unknown_fields(cache, {"mode", "directory"}, f"{field}.cache")
+        if cache.get("mode", "off") not in ("off", "symlink"):
+            raise ValidationError(f"{field}.cache.mode is invalid")
+        if "directory" in cache:
+            _string(cache["directory"], f"{field}.cache.directory")
+        normalized["cache"] = dict(cache)
+    if "local" in options:
+        local = _mapping(options["local"], f"{field}.local")
+        _unknown_fields(local, {"strategy"}, f"{field}.local")
+        if local.get("strategy", "copy") not in ("copy", "symlink"):
+            raise ValidationError(f"{field}.local.strategy is invalid")
+        normalized["local"] = dict(local)
+    return _freeze(normalized)
+
+
+def effective_options(manifest: Manifest, dependency: Dependency) -> Mapping[str, object]:
+    """Return built-in, manifest, and dependency options with recursive merging."""
+    return _freeze(_merge_options(_merge_options(BUILT_IN_DEFAULTS, manifest.defaults), dependency.options))
+
+
+def _json_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValidationError(f"manifest contains duplicate key {key!r}")
+        result[key] = value
+    return result
+
+
+def parse_manifest_json(document: str, *, platform: str | None = None) -> Manifest:
+    """Parse strict JSON text and validate it as a manifest."""
+    try:
+        value = json.loads(document, object_pairs_hook=_json_object)
+    except json.JSONDecodeError as error:
+        raise ValidationError(f"manifest is not valid JSON: {error.msg}") from None
+    return parse_manifest(value, platform=platform)
+
+
+MINIMAL_MANIFEST_BYTES = b'{\n  "schema_version": 1,\n  "dependencies": {}\n}\n'
+
+
+def initialize_manifest(directory: Path) -> bool:
+    """Create the minimal manifest, returning whether this call wrote it."""
+    destination = directory / "odindeps.json"
+    if destination.exists():
+        try:
+            parse_manifest_json(destination.read_text(encoding="utf-8"))
+        except UnicodeDecodeError as error:
+            raise ValidationError("manifest must be valid UTF-8") from error
+        return False
+    with tempfile.NamedTemporaryFile(mode="wb", dir=directory, delete=False) as temporary_file:
+        temporary_path = Path(temporary_file.name)
+        temporary_file.write(MINIMAL_MANIFEST_BYTES)
+    try:
+        os.replace(temporary_path, destination)
+    except OSError:
+        temporary_path.unlink(missing_ok=True)
+        raise
+    return True
+
+
+def _local_metadata(dependency: Dependency, source: Path) -> dict[str, object]:
+    return {"schema_version": 1, "name": dependency.name, "dependency_kind": "path", "path": str(source)}
+
+
+def _is_owned_local_copy(destination: Path, metadata: Mapping[str, object]) -> bool:
+    try:
+        observed = json.loads(destination.joinpath(".odindeps-meta.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return observed == metadata
+
+
+def _reserved_metadata_path(directory: Path) -> Path:
+    path = directory / ".odindeps-meta.json"
+    if os.path.lexists(path):
+        raise FilesystemError("dependency content must not contain the reserved .odindeps-meta.json path")
+    return path
+
+
+def _validate_snapshot_tree(root: Path) -> None:
+    """Reject reserved metadata and links that can escape a materialized snapshot."""
+    _reserved_metadata_path(root)
+    resolved_root = root.resolve()
+    for path in root.rglob("*"):
+        if not path.is_symlink():
+            continue
+        target = os.readlink(path)
+        if os.path.isabs(target):
+            raise FilesystemError("dependency content contains an absolute symbolic link")
+        resolved_target = (path.parent / target).resolve()
+        if resolved_target != resolved_root and resolved_root not in resolved_target.parents:
+            raise FilesystemError("dependency content contains a symbolic link outside its snapshot")
+
+
+def _write_metadata(directory: Path, metadata: Mapping[str, object]) -> None:
+    _reserved_metadata_path(directory).write_text(
+        json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+
+def _replace_owned_destination(destination: Path, staged: Path) -> None:
+    """Publish a complete staged directory without destroying the old snapshot first."""
+    if not (destination.exists() or destination.is_symlink()):
+        os.replace(staged, destination)
+        return
+    backup = destination.with_name(f".{destination.name}.odindeps-backup-{uuid.uuid4().hex}")
+    os.replace(destination, backup)
+    try:
+        os.replace(staged, destination)
+    except OSError:
+        os.replace(backup, destination)
+        raise
+    if backup.is_symlink() or backup.is_file():
+        backup.unlink()
+    else:
+        shutil.rmtree(backup)
+
+
+def _copy_local_dependency(source: Path, destination: Path, metadata: Mapping[str, object]) -> None:
+    _validate_snapshot_tree(source)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=destination.parent) as staging_directory:
+        staged_destination = Path(staging_directory) / destination.name
+        shutil.copytree(source, staged_destination, symlinks=True)
+        _validate_snapshot_tree(staged_destination)
+        _write_metadata(staged_destination, metadata)
+        _replace_owned_destination(destination, staged_destination)
+
+
+def _run_git(*arguments: str, cwd: Path | None = None, environment: Mapping[str, str] | None = None) -> str:
+    environment = {**os.environ, "GIT_TERMINAL_PROMPT": "0", **(environment or {})}
+    try:
+        completed = subprocess.run(["git", *arguments], cwd=cwd, env=environment, capture_output=True, text=True, check=False)
+    except OSError as error:
+        raise GitError("Git executable is unavailable") from error
+    if completed.returncode:
+        raise GitError(sanitize_git_error(completed.stderr))
+    return completed.stdout.strip()
+
+
+def _safe_checkout(repository: Path, revision: str) -> None:
+    """Checkout dependency files without inherited hooks or filter definitions."""
+    with tempfile.TemporaryDirectory() as safe_directory:
+        safe_root = Path(safe_directory)
+        empty_global = safe_root / "gitconfig"
+        empty_global.touch()
+        hooks_directory = safe_root / "hooks"
+        hooks_directory.mkdir()
+        _run_git(
+            "-c",
+            f"core.hooksPath={hooks_directory}",
+            "-c",
+            "core.autocrlf=false",
+            "checkout",
+            "--detach",
+            revision,
+            cwd=repository,
+            environment={"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": str(empty_global)},
+        )
+
+
+def _run_git_without_hooks(*arguments: str, cwd: Path | None = None) -> str:
+    with tempfile.TemporaryDirectory() as safe_directory:
+        hooks_directory = Path(safe_directory) / "hooks"
+        hooks_directory.mkdir()
+        return _run_git("-c", f"core.hooksPath={hooks_directory}", *arguments, cwd=cwd)
+
+
+def _resolve_git_revision(repository: Path, revision: str) -> str:
+    candidates = (revision, f"origin/{revision}")
+    for candidate in candidates:
+        try:
+            return _run_git("rev-parse", "--verify", f"{candidate}^{{commit}}", cwd=repository)
+        except GitError:
+            continue
+    raise GitError("Git revision could not be resolved")
+
+
+def _path_matches_pattern(path: str, pattern: str) -> bool:
+    path_parts = path.split("/")
+    pattern_parts = pattern.split("/")
+
+    def match(path_index: int, pattern_index: int) -> bool:
+        if pattern_index == len(pattern_parts):
+            return path_index == len(path_parts)
+        token = pattern_parts[pattern_index]
+        if token == "**":
+            return any(match(next_index, pattern_index + 1) for next_index in range(path_index, len(path_parts) + 1))
+        return (
+            path_index < len(path_parts)
+            and fnmatch.fnmatchcase(path_parts[path_index], token)
+            and match(path_index + 1, pattern_index + 1)
+        )
+
+    return match(0, 0)
+
+
+def _clone_dependency(dependency: Dependency, options: Mapping[str, object], destination: Path, force: bool) -> None:
+    remote = derive_remote(dependency.git or "", options["transport"])
+    metadata: dict[str, object] = {
+        "schema_version": 1,
+        "name": dependency.name,
+        "dependency_kind": "git",
+        "git": _normalized_git(dependency.git or ""),
+        "rev": dependency.rev,
+        "options": {
+            "files": list(options["git"].get("clone", {}).get("files", ())),
+            "cache_mode": options["cache"]["mode"],
+        },
+    }
+    clone_options = options["git"].get("clone", {})
+    files = tuple(clone_options.get("files", ()))
+    if destination.exists() or destination.is_symlink():
+        try:
+            observed = json.loads(destination.joinpath(".odindeps-meta.json").read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            observed = {}
+        owned = all(observed.get(key) == value for key, value in metadata.items())
+        if owned and not force:
+            return
+        if not force or not owned:
+            raise ConflictError(f"dependency {dependency.name!r} destination is not an owned clone snapshot")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=destination.parent) as staging_directory:
+        staged = Path(staging_directory) / destination.name
+        _run_git("clone", "--no-checkout", "--no-single-branch", remote, str(staged))
+        resolved = _resolve_git_revision(staged, dependency.rev or "")
+        _safe_checkout(staged, resolved)
+        metadata["commit"] = resolved
+        shutil.rmtree(staged / ".git")
+        _validate_snapshot_tree(staged)
+        if files:
+            selected = [path for path in staged.rglob("*") if path.is_file() and any(_path_matches_pattern(path.relative_to(staged).as_posix(), pattern) for pattern in files)]
+            if not selected:
+                raise ValidationError(f"dependency {dependency.name!r} clone files matched no files")
+            filtered = Path(staging_directory) / "filtered"
+            filtered.mkdir()
+            for path in selected:
+                target = filtered / path.relative_to(staged)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(path, target, follow_symlinks=False)
+            shutil.rmtree(staged)
+            filtered.rename(staged)
+        _write_metadata(staged, metadata)
+        if options["cache"]["mode"] == "symlink":
+            cache_root = Path(os.path.expandvars(str(options["cache"]["directory"]))).expanduser()
+            entry = cache_root / cache_key(dependency.git or "", resolved, files)
+            cache_root.mkdir(parents=True, exist_ok=True)
+            if not entry.exists():
+                os.replace(staged, entry)
+                for path in entry.rglob("*"):
+                    if path.is_file() and not path.is_symlink():
+                        path.chmod(path.stat().st_mode & ~0o222)
+                    elif path.is_dir() and not path.is_symlink():
+                        path.chmod(path.stat().st_mode & ~0o222)
+                entry.chmod(entry.stat().st_mode & ~0o222)
+            else:
+                try:
+                    cached_metadata = json.loads(entry.joinpath(".odindeps-meta.json").read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    raise ConflictError(f"dependency {dependency.name!r} cache entry is invalid") from None
+                if cached_metadata != metadata:
+                    raise ConflictError(f"dependency {dependency.name!r} cache entry does not match its identity")
+            target = Path(os.path.relpath(entry, destination.parent))
+            if destination.is_symlink():
+                destination.unlink()
+            elif destination.exists():
+                raise ConflictError(f"dependency {dependency.name!r} destination is not an owned cache link")
+            destination.symlink_to(target, target_is_directory=True)
+        else:
+            _replace_owned_destination(destination, staged)
+
+
+def _require_clean_repository(directory: Path) -> None:
+    if _run_git("rev-parse", "--is-inside-work-tree", cwd=directory) != "true":
+        raise ValidationError("Git integration requires a consuming Git repository")
+    if _run_git("status", "--porcelain", cwd=directory):
+        raise ConflictError("consuming Git repository must be clean")
+
+
+def _submodule_dependency(directory: Path, dependency: Dependency, options: Mapping[str, object], destination: Path, force: bool) -> None:
+    if options["cache"]["mode"] != "off" or options["git"].get("clone", {}).get("files"):
+        raise ValidationError(f"dependency {dependency.name!r} submodule does not support cache or clone files")
+    remote = derive_remote(dependency.git or "", options["transport"])
+    relative = destination.relative_to(directory).as_posix()
+    if destination.exists():
+        try:
+            declared_path = _run_git("config", "-f", ".gitmodules", "--get", f"submodule.{dependency.name}.path", cwd=directory)
+            declared_remote = _run_git("config", "-f", ".gitmodules", "--get", f"submodule.{dependency.name}.url", cwd=directory)
+            head = _run_git("-C", str(destination), "rev-parse", "HEAD")
+            expected = _run_git("-C", str(destination), "rev-parse", f"{dependency.rev}^{{commit}}")
+        except GitError:
+            declared_path = declared_remote = head = expected = ""
+        managed = (declared_path, declared_remote) == (relative, remote)
+        if managed and head == expected and not force:
+            return
+        if not managed or not force:
+            raise ConflictError(f"dependency {dependency.name!r} submodule is not managed")
+    _require_clean_repository(directory)
+    if destination.exists():
+        _run_git("fetch", "--tags", "origin", cwd=destination)
+        resolved = _resolve_git_revision(destination, dependency.rev or "")
+        _safe_checkout(destination, resolved)
+    else:
+        _run_git_without_hooks("submodule", "add", "--name", dependency.name, remote, relative, cwd=directory)
+        resolved = _resolve_git_revision(destination, dependency.rev or "")
+        _safe_checkout(destination, resolved)
+    _run_git("add", ".gitmodules", relative, cwd=directory)
+
+
+def _subtree_dependency(directory: Path, dependency: Dependency, options: Mapping[str, object], destination: Path, force: bool) -> None:
+    if options["cache"]["mode"] != "off" or options["git"].get("clone", {}).get("files"):
+        raise ValidationError(f"dependency {dependency.name!r} subtree does not support cache or clone files")
+    _require_clean_repository(directory)
+    remote = derive_remote(dependency.git or "", options["transport"])
+    relative = destination.relative_to(directory).as_posix()
+    squash = options["git"].get("subtree", {}).get("squash", True)
+    if destination.exists() and not force:
+        message = _run_git("log", "-1", "--format=%B", cwd=directory)
+        if f"git-subtree-dir: {relative}" in message or message.startswith("Merge commit ") and message.rstrip().endswith(f"as '{relative}'"):
+            return
+        raise ConflictError(f"dependency {dependency.name!r} subtree already exists; use --force to pull")
+    arguments = ["subtree", "pull" if destination.exists() else "add", f"--prefix={relative}", remote, dependency.rev or ""]
+    if squash:
+        arguments.append("--squash")
+    _run_git(*arguments, cwd=directory)
+
+
+def _write_manifest(directory: Path, value: Mapping[str, object]) -> None:
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=directory, delete=False) as output:
+        temporary = Path(output.name)
+        output.write(json.dumps(value, indent=2, sort_keys=True) + "\n")
+    try:
+        os.replace(temporary, directory / "odindeps.json")
+    except OSError:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+def add_dependency(
+    directory: Path,
+    *,
+    name: str | None,
+    git: str | None,
+    rev: str | None,
+    path_value: str | None,
+) -> None:
+    """Materialize then atomically publish one new manifest declaration."""
+    if (git is None) == (path_value is None):
+        raise ValidationError("add requires exactly one of --git or --path")
+    if git is not None and rev is None:
+        raise ValidationError("--rev is required with --git")
+    if path_value is not None and rev is not None:
+        raise ValidationError("--rev is only valid with --git")
+    inferred = (git or path_value or "").rstrip("/").removesuffix(".git").split("/")[-1]
+    dependency_name = name or inferred
+    if not DEPENDENCY_NAME.fullmatch(dependency_name):
+        raise ValidationError("--name is invalid")
+    path = directory / "odindeps.json"
+    raw: dict[str, object]
+    if path.exists():
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_json_object)
+        except UnicodeDecodeError as error:
+            raise ValidationError("manifest must be valid UTF-8") from error
+        except json.JSONDecodeError as error:
+            raise ValidationError(f"manifest is not valid JSON: {error.msg}") from None
+        current_manifest = parse_manifest(raw)
+    else:
+        raw = {"schema_version": 1, "dependencies": {}}
+        current_manifest = parse_manifest(raw)
+    dependencies = raw["dependencies"]
+    assert isinstance(dependencies, dict)
+    declaration: dict[str, object] = {"git": git, "rev": rev} if git is not None else {"path": path_value}
+    if dependency_name in dependencies:
+        if dependencies[dependency_name] == declaration:
+            synchronize_manifest(
+                directory,
+                force=False,
+                manifest=current_manifest,
+                dependency_names={dependency_name},
+            )
+            return
+        raise ConflictError(f"dependency {dependency_name!r} already exists")
+    candidate = json.loads(json.dumps(raw))
+    candidate["dependencies"][dependency_name] = declaration
+    candidate_manifest = parse_manifest(candidate)
+    synchronize_manifest(
+        directory,
+        force=False,
+        manifest=candidate_manifest,
+        dependency_names={dependency_name},
+    )
+    _write_manifest(directory, candidate)
+
+
+def synchronize_manifest(
+    directory: Path,
+    *,
+    force: bool,
+    manifest: Manifest | None = None,
+    dependency_names: set[str] | None = None,
+) -> None:
+    """Synchronize every declaration from a validated manifest."""
+    manifest_path = directory / "odindeps.json"
+    if manifest is None:
+        try:
+            manifest = parse_manifest_json(manifest_path.read_text(encoding="utf-8"))
+        except UnicodeDecodeError as error:
+            raise ValidationError("manifest must be valid UTF-8") from error
+        except OSError as error:
+            raise FilesystemError(f"cannot read odindeps.json: {error}") from None
+    planned = []
+    for dependency in sorted(manifest.dependencies.values(), key=lambda item: item.name):
+        options = effective_options(manifest, dependency)
+        destination = directory.joinpath(*options["destination_root"].split("/"), dependency.name)
+        planned.append((dependency, options, destination))
+    resolved_directory = directory.resolve()
+    for dependency, _, destination in planned:
+        resolved_parent = destination.parent.resolve()
+        if resolved_parent != resolved_directory and resolved_directory not in resolved_parent.parents:
+            raise ConflictError(f"dependency {dependency.name!r} destination escapes the project directory")
+    # Validate every local boundary before the first mutation in the action loop.
+    for dependency, _, destination in planned:
+        if dependency.path is None:
+            continue
+        source = Path(os.path.expandvars(dependency.path)).expanduser()
+        if not source.is_absolute():
+            source = directory / source
+        source = source.resolve()
+        if not source.is_dir():
+            raise FilesystemError(f"dependency {dependency.name!r} local source is not a directory")
+        if source == destination or source in destination.parents or destination in source.parents:
+            raise ConflictError(f"dependency {dependency.name!r} source and destination must not contain one another")
+        _validate_snapshot_tree(source)
+    # Verify all clone remotes and revisions before any local dependency is published.
+    for dependency, options, _ in planned:
+        if dependency.git is None or options["git"]["strategy"] != "clone":
+            continue
+        remote = derive_remote(dependency.git, options["transport"])
+        with tempfile.TemporaryDirectory() as probe_directory:
+            probe = Path(probe_directory) / "repository"
+            _run_git("clone", "--no-checkout", "--no-single-branch", remote, str(probe))
+            _resolve_git_revision(probe, dependency.rev or "")
+    for dependency, options, destination in planned:
+        if dependency_names is not None and dependency.name not in dependency_names:
+            continue
+        if dependency.git is not None:
+            strategy = options["git"]["strategy"]
+            if strategy == "clone":
+                _clone_dependency(dependency, options, destination, force)
+            elif strategy == "submodule":
+                _submodule_dependency(directory, dependency, options, destination, force)
+            else:
+                _subtree_dependency(directory, dependency, options, destination, force)
+            continue
+        source = Path(os.path.expandvars(dependency.path)).expanduser()
+        if not source.is_absolute():
+            source = directory / source
+        source = source.resolve()
+        if not source.is_dir():
+            raise FilesystemError(f"dependency {dependency.name!r} local source is not a directory")
+        if source == destination or source in destination.parents or destination in source.parents:
+            raise ConflictError(f"dependency {dependency.name!r} source and destination must not contain one another")
+        if options["local"]["strategy"] == "symlink":
+            target = Path(os.path.relpath(source, destination.parent))
+            if destination.is_symlink() and destination.readlink() == target:
+                continue
+            if destination.exists() or destination.is_symlink():
+                raise ConflictError(f"dependency {dependency.name!r} destination is not the expected symlink")
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.symlink_to(target, target_is_directory=True)
+            continue
+        metadata = _local_metadata(dependency, source)
+        if destination.exists() or destination.is_symlink():
+            if _is_owned_local_copy(destination, metadata):
+                if not force:
+                    continue
+                if destination.is_symlink():
+                    raise ConflictError(f"dependency {dependency.name!r} destination is not a managed copy")
+            else:
+                raise ConflictError(f"dependency {dependency.name!r} destination is not owned by odindeps")
+        try:
+            _copy_local_dependency(source, destination, metadata)
+        except OSError as error:
+            raise FilesystemError(f"dependency {dependency.name!r} could not be copied: {error}") from None
+
+
+def parse_manifest(value: object, *, platform: str | None = None) -> Manifest:
+    """Validate an in-memory schema-version-one manifest before any effects occur."""
+    raw_manifest = _mapping(value, "manifest")
+    _unknown_fields(raw_manifest, {"schema_version", "dependencies", "defaults"}, "manifest")
+    if type(raw_manifest.get("schema_version")) is not int or raw_manifest.get("schema_version") != 1:
+        raise ValidationError("manifest.schema_version must equal 1")
+    raw_dependencies = _mapping(raw_manifest.get("dependencies"), "manifest.dependencies")
+    defaults = _validate_options(raw_manifest.get("defaults", {}), "manifest.defaults")
+    dependencies: dict[str, Dependency] = {}
+    for name, raw_dependency in raw_dependencies.items():
+        if not isinstance(name, str) or not DEPENDENCY_NAME.fullmatch(name) or name in (".", ".."):
+            raise ValidationError(f"manifest.dependencies contains invalid dependency name {name!r}")
+        dependency = _mapping(raw_dependency, f"manifest.dependencies.{name}")
+        _unknown_fields(dependency, {"git", "rev", "path", "options"}, f"manifest.dependencies.{name}")
+        has_git = "git" in dependency
+        has_path = "path" in dependency
+        if has_git == has_path:
+            raise ValidationError(f"manifest.dependencies.{name} must contain exactly one of git or path")
+        if has_git and "rev" not in dependency:
+            raise ValidationError(f"manifest.dependencies.{name}.rev is required for a Git dependency")
+        if has_path and "rev" in dependency:
+            raise ValidationError(f"manifest.dependencies.{name}.rev is only valid for a Git dependency")
+        scope = {"destination_root", "transport", "git", "cache"} if has_git else {"destination_root", "local"}
+        raw_options = _mapping(dependency.get("options", {}), f"manifest.dependencies.{name}.options")
+        _unknown_fields(raw_options, scope, f"manifest.dependencies.{name}.options")
+        dependencies[name] = Dependency(
+            name=name,
+            git=_git_locator(dependency["git"], f"manifest.dependencies.{name}.git") if has_git else None,
+            rev=_revision(dependency["rev"], f"manifest.dependencies.{name}.rev") if has_git else None,
+            path=_string(dependency["path"], f"manifest.dependencies.{name}.path") if has_path else None,
+            options=_validate_options(raw_options, f"manifest.dependencies.{name}.options"),
+        )
+    manifest = Manifest(1, MappingProxyType(dependencies), defaults)
+    platform_name = (platform or sys.platform).lower()
+    destinations: set[str] = set()
+    for dependency in manifest.dependencies.values():
+        options_for_dependency = effective_options(manifest, dependency)
+        strategy = options_for_dependency["git"]["strategy"] if dependency.git else options_for_dependency["local"]["strategy"]
+        if dependency.git and options_for_dependency["cache"]["mode"] == "symlink" and strategy != "clone":
+            raise ValidationError(f"manifest.dependencies.{dependency.name} cache symlink requires Git clone")
+        if dependency.git and options_for_dependency["git"].get("clone", {}).get("files") and strategy != "clone":
+            raise ValidationError(f"manifest.dependencies.{dependency.name} clone files require Git clone")
+        cache_symlink = dependency.git is not None and options_for_dependency["cache"]["mode"] == "symlink"
+        if platform_name.startswith("win") and (strategy == "symlink" or cache_symlink):
+            raise ValidationError(f"manifest.dependencies.{dependency.name} symlink strategy is unsupported on Windows")
+        destination = f"{options_for_dependency['destination_root']}/{dependency.name}"
+        identity = destination.casefold() if platform_name.startswith("win") else destination
+        if identity in destinations:
+            raise ValidationError(f"manifest.dependencies.{dependency.name} duplicates a normalized destination")
+        destinations.add(identity)
+    return manifest
+
+
+class _ArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        raise ValidationError(message)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Build the public command-line parser without performing any effects."""
+    parser = _ArgumentParser(
+        prog="odindeps",
+        description="Materialize explicitly declared Odin project dependencies.",
+    )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
+    subcommands = parser.add_subparsers(dest="command", metavar="<command>")
+
+    for command in ("init", "add", "sync"):
+        subcommand = subcommands.add_parser(command, help=f"Prepare the {command} workflow.")
+        if command == "sync":
+            subcommand.add_argument("--force", action="store_true")
+        if command == "add":
+            location = subcommand.add_mutually_exclusive_group(required=True)
+            location.add_argument("--git")
+            location.add_argument("--path")
+            subcommand.add_argument("--rev")
+            subcommand.add_argument("--name")
+
+    return parser
+
+
+def main(arguments: Sequence[str] | None = None) -> int:
+    """Run the command-line interface and reserve commands for later slices."""
+    parser = build_parser()
+    try:
+        namespace = parser.parse_args(arguments)
+    except ValidationError as error:
+        print(f"odindeps: {error}", file=sys.stderr)
+        return error.exit_code
+
+    if namespace.command is None:
+        parser.print_help()
+        return 0
+
+    if namespace.command == "init":
+        try:
+            created = initialize_manifest(Path.cwd())
+        except ValidationError as error:
+            print(f"odindeps: {error}", file=sys.stderr)
+            return error.exit_code
+        except OSError as error:
+            print(f"odindeps: cannot initialize manifest: {error}", file=sys.stderr)
+            return 5
+        print("odindeps: initialized odindeps.json" if created else "odindeps: odindeps.json is already valid")
+        return 0
+
+    if namespace.command == "sync":
+        try:
+            synchronize_manifest(Path.cwd(), force=namespace.force)
+        except (ValidationError, ConflictError, FilesystemError, GitError) as error:
+            print(f"odindeps: {error}", file=sys.stderr)
+            return error.exit_code
+        except Exception:
+            print("odindeps: unexpected internal error", file=sys.stderr)
+            return InternalError.exit_code
+        print("odindeps: synchronization complete")
+        return 0
+
+    if namespace.command == "add":
+        try:
+            add_dependency(
+                Path.cwd(),
+                name=namespace.name,
+                git=namespace.git,
+                rev=namespace.rev,
+                path_value=namespace.path,
+            )
+        except (ValidationError, ConflictError, FilesystemError, GitError) as error:
+            print(f"odindeps: {error}", file=sys.stderr)
+            return error.exit_code
+        except Exception:
+            print("odindeps: unexpected internal error", file=sys.stderr)
+            return InternalError.exit_code
+        print("odindeps: dependency added")
+        return 0
+
+    parser.exit(5, f"odindeps: {namespace.command} is not implemented yet\n")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

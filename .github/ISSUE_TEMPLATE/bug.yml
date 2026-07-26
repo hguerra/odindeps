@@ -1,0 +1,23 @@
+name: Bug report
+description: Report reproducible behavior without sensitive data.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Never include credentials, private repository names, or unsanitized manifests/output.
+  - type: input
+    id: version
+    attributes: {label: "odindeps --version"}
+    validations: {required: true}
+  - type: input
+    id: platform
+    attributes: {label: "OS, Python, and Git versions"}
+    validations: {required: true}
+  - type: input
+    id: strategy
+    attributes: {label: Strategy and transport}
+    validations: {required: true}
+  - type: textarea
+    id: reproduction
+    attributes: {label: "Exact command, sanitized manifest, expected/actual behavior, and sanitized output"}
+    validations: {required: true}

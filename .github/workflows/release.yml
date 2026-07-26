@@ -1,0 +1,88 @@
+name: Release
+on:
+  push: {tags: ['v*.*.*']}
+  workflow_dispatch:
+    inputs: {tag: {description: Existing vX.Y.Z tag, required: true, type: string}}
+permissions: {contents: read}
+concurrency:
+  group: release-${{ github.repository }}
+  cancel-in-progress: false
+env:
+  REQUESTED_TAG: ${{ inputs.tag || github.ref_name }}
+jobs:
+  verify:
+    outputs:
+      tag: ${{ steps.tag.outputs.value }}
+      commit: ${{ steps.revision.outputs.value }}
+    strategy: {matrix: {os: [ubuntu-latest, macos-latest, windows-latest]}}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with: {fetch-depth: 0, persist-credentials: false}
+      - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2
+      - id: tag
+        shell: bash
+        run: |
+          [[ "$REQUESTED_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          git rev-parse --verify "refs/tags/$REQUESTED_TAG^{commit}"
+          git merge-base --is-ancestor "$REQUESTED_TAG" origin/main
+          echo "value=$REQUESTED_TAG" >> "$GITHUB_OUTPUT"
+      - id: revision
+        shell: bash
+        env:
+          SANITIZED_TAG: ${{ steps.tag.outputs.value }}
+        run: echo "value=$(git rev-parse "$SANITIZED_TAG^{commit}")" >> "$GITHUB_OUTPUT"
+      - shell: bash
+        env:
+          RELEASE_COMMIT: ${{ steps.revision.outputs.value }}
+        run: git checkout --detach "$RELEASE_COMMIT"
+      - run: mise run check
+      - shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.tag.outputs.value }}
+        run: |
+          version="${RELEASE_TAG#v}"
+          test "$version" = "$(uv run --locked python -c 'import sys; print(sys.argv[1].split()[-1])' "$(./odindeps --version)")"
+          test "$version" = "$(uv run --locked python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          grep -F "## [$version]" CHANGELOG.md
+          test -x odindeps && test "$(head -n 1 odindeps)" = '#!/usr/bin/env python3' && cp odindeps /tmp/odindeps && /tmp/odindeps --help
+        if: runner.os != 'Windows'
+      - shell: pwsh
+        env:
+          RELEASE_TAG: ${{ steps.tag.outputs.value }}
+        run: |
+          $version = $env:RELEASE_TAG.Substring(1)
+          if ((& ./odindeps --version) -ne "odindeps $version") { exit 1 }
+        if: runner.os == 'Windows'
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions: {contents: write}
+    env:
+      RELEASE_TAG: ${{ needs.verify.outputs.tag }}
+      RELEASE_COMMIT: ${{ needs.verify.outputs.commit }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with: {ref: '${{ needs.verify.outputs.commit }}', persist-credentials: false}
+      - run: sha256sum odindeps > odindeps.sha256
+      - name: Publish immutable assets
+        env: {GH_TOKEN: '${{ github.token }}'}
+        shell: bash
+        run: |
+          test "$(git rev-parse "$RELEASE_TAG^{commit}")" = "$RELEASE_COMMIT"
+          {
+            printf 'Release notes from CHANGELOG.md\n\n'
+            cat CHANGELOG.md
+            printf '\nVerify SHA-256 with: sha256sum --check odindeps.sha256\n'
+            printf 'Install: place odindeps on PATH and make it executable.\n'
+          } > release-notes.md
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" odindeps odindeps.sha256 --verify-tag --title "$RELEASE_TAG" --notes-file release-notes.md
+          fi
+          actual_assets="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' | sort)"
+          expected_assets="$(printf '%s\n' odindeps odindeps.sha256 | sort)"
+          test "$actual_assets" = "$expected_assets"
+          mkdir -p downloaded
+          gh release download "$RELEASE_TAG" --pattern odindeps --pattern odindeps.sha256 --dir downloaded
+          (cd downloaded && sha256sum --check odindeps.sha256)
+          cmp odindeps downloaded/odindeps

@@ -1,3 +1,15 @@
 [tools]
 python = "3.14.6"
 uv = "0.11.32"
+
+[tasks."test:unit"]
+run = "uv run --locked python -m unittest discover -s tests/unit -p 'test_*.py'"
+
+[tasks."test:integration"]
+run = "uv run --locked python -m unittest discover -s tests/integration -p 'test_*.py'"
+
+[tasks.test]
+run = "uv run --locked python -m unittest discover -s tests -p 'test_*.py'"
+
+[tasks.check]
+run = "uv run --locked python -m unittest discover -s tests -p 'test_*.py' && uv run --locked python -m py_compile odindeps"
