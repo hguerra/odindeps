@@ -19,12 +19,12 @@ class OptionTests(unittest.TestCase):
                     "parser": {
                         "git": "github.com/example/parser",
                         "rev": "v1",
-                        "options": {"git": {"clone": {"files": ["src/**/*.odin"]}}},
+                        "options": {"git": {"clone": {"includes": ["src/**/*.odin"]}}},
                     }
                 },
                 "defaults": {
                     "destination_root": "vendor",
-                    "git": {"clone": {"files": ["*.odin", "LICENSE"]}},
+                    "git": {"clone": {"includes": ["*.odin", "LICENSE"], "excludes": ["tests/**"]}},
                 },
             }
         )
@@ -33,7 +33,8 @@ class OptionTests(unittest.TestCase):
 
         self.assertEqual(options["destination_root"], "vendor")
         self.assertEqual(options["transport"], "https")
-        self.assertEqual(options["git"]["clone"]["files"], ("src/**/*.odin",))
+        self.assertEqual(options["git"]["clone"]["includes"], ("src/**/*.odin",))
+        self.assertEqual(options["git"]["clone"]["excludes"], ("tests/**",))
         self.assertTrue(options["git"]["subtree"]["squash"])
 
 

@@ -28,12 +28,27 @@ class RuntimeValidationRegressionTests(unittest.TestCase):
                     "library": {
                         "git": "example.test/team/library",
                         "rev": "v1",
-                        "options": {"git": {"clone": {"files": [pattern]}}},
+                        "options": {"git": {"clone": {"includes": [pattern]}}},
                     }
                 },
             }
             with self.subTest(pattern=pattern), self.assertRaises(odindeps.ValidationError):
                 odindeps.parse_manifest(manifest)
+
+    def test_legacy_clone_files_field_is_rejected(self) -> None:
+        with self.assertRaises(odindeps.ValidationError):
+            odindeps.parse_manifest(
+                {
+                    "schema_version": 1,
+                    "dependencies": {
+                        "library": {
+                            "git": "example.test/team/library",
+                            "rev": "v1",
+                            "options": {"git": {"clone": {"files": ["*.odin"]}}},
+                        }
+                    },
+                }
+            )
 
     def test_windows_drive_destination_is_not_a_project_relative_path(self) -> None:
         manifest = {

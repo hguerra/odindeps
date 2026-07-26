@@ -33,11 +33,12 @@ class GitPlanningTests(unittest.TestCase):
         self.assertEqual(message, "Git command failed")
 
     def test_cache_key_changes_when_the_commit_or_filters_change(self) -> None:
-        base = odindeps.cache_key("example.test/team/library", "a" * 40, ())
+        base = odindeps.cache_key("example.test/team/library", "a" * 40, (), ())
 
-        self.assertEqual(base, odindeps.cache_key("example.test/team/library", "a" * 40, ()))
-        self.assertNotEqual(base, odindeps.cache_key("example.test/team/library", "b" * 40, ()))
-        self.assertNotEqual(base, odindeps.cache_key("example.test/team/library", "a" * 40, ("*.odin",)))
+        self.assertEqual(base, odindeps.cache_key("example.test/team/library", "a" * 40, (), ()))
+        self.assertNotEqual(base, odindeps.cache_key("example.test/team/library", "b" * 40, (), ()))
+        self.assertNotEqual(base, odindeps.cache_key("example.test/team/library", "a" * 40, ("*.odin",), ()))
+        self.assertNotEqual(base, odindeps.cache_key("example.test/team/library", "a" * 40, (), ("tests/**",)))
 
 
 if __name__ == "__main__":

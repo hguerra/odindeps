@@ -215,6 +215,11 @@ Configuration is merged from built-ins, manifest `defaults`, then
 per-dependency `options`. The checked-in `odindeps.schema.json` describes the
 manifest using JSON Schema Draft 2020-12.
 
+For clone snapshots, `options.git.clone.includes` selects relative POSIX globs
+and `excludes` removes matches after inclusion. When `includes` is omitted all
+regular files are candidates; a configured filter set must leave at least one
+file. The legacy `files` field is not accepted.
+
 ## Strategy guides
 
 | Strategy | Guide | Important effect |

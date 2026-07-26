@@ -354,7 +354,7 @@ class SecurityRegressionTests(unittest.TestCase):
             manifest.write_text(
                 json.dumps(
                     clone_manifest(
-                        options={"git": {"clone": {"files": ["a.odin"]}}}
+                        options={"git": {"clone": {"includes": ["a.odin"]}}}
                     )
                 ),
                 encoding="utf-8",
@@ -363,7 +363,7 @@ class SecurityRegressionTests(unittest.TestCase):
             manifest.write_text(
                 json.dumps(
                     clone_manifest(
-                        options={"git": {"clone": {"files": ["b.odin"]}}}
+                        options={"git": {"clone": {"includes": ["b.odin"]}}}
                     )
                 ),
                 encoding="utf-8",
@@ -373,6 +373,78 @@ class SecurityRegressionTests(unittest.TestCase):
 
         self.assertEqual(first.returncode, 0, first.stderr)
         self.assertEqual(second.returncode, 3, second.stderr)
+
+    def test_clone_includes_then_excludes_test_and_example_sources(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source = initialize_source(root)
+            source.joinpath("library.odin").write_text("package library\n", encoding="utf-8")
+            source.joinpath("library_test.odin").write_text("package library\n", encoding="utf-8")
+            source.joinpath("tests").mkdir()
+            source.joinpath("tests", "integration.odin").write_text("package tests\n", encoding="utf-8")
+            source.joinpath("examples").mkdir()
+            source.joinpath("examples", "main.odin").write_text("package main\n", encoding="utf-8")
+            source.joinpath("README.md").write_text("fixture\n", encoding="utf-8")
+            git(source, "add", ".")
+            git(source, "commit", "-m", "fixture")
+            git(source, "tag", "v1")
+            bare = create_bare_remote(root, source)
+            config = root / "gitconfig"
+            write_git_config(config, bare)
+            project = root / "project"
+            project.mkdir()
+            project.joinpath("odindeps.json").write_text(
+                json.dumps(
+                    clone_manifest(
+                        options={
+                            "git": {
+                                "clone": {
+                                    "includes": ["**/*.odin"],
+                                    "excludes": ["**/*_test.odin", "tests/**", "examples/**"],
+                                }
+                            }
+                        }
+                    )
+                ),
+                encoding="utf-8",
+            )
+
+            result = run_sync(project, git_environment(config))
+            destination = project / "src" / "third_party" / "library"
+
+            self.assertTrue(destination.joinpath("library.odin").is_file())
+            self.assertFalse(destination.joinpath("library_test.odin").exists())
+            self.assertFalse(destination.joinpath("tests", "integration.odin").exists())
+            self.assertFalse(destination.joinpath("examples", "main.odin").exists())
+            self.assertFalse(destination.joinpath("README.md").exists())
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_clone_excludes_that_match_nothing_are_a_no_op(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source = initialize_source(root)
+            source.joinpath("library.odin").write_text("package library\n", encoding="utf-8")
+            git(source, "add", ".")
+            git(source, "commit", "-m", "fixture")
+            git(source, "tag", "v1")
+            bare = create_bare_remote(root, source)
+            config = root / "gitconfig"
+            write_git_config(config, bare)
+            project = root / "project"
+            project.mkdir()
+            project.joinpath("odindeps.json").write_text(
+                json.dumps(
+                    clone_manifest(
+                        options={"git": {"clone": {"excludes": ["missing/**"]}}}
+                    )
+                ),
+                encoding="utf-8",
+            )
+
+            result = run_sync(project, git_environment(config))
+
+            self.assertTrue((project / "src" / "third_party" / "library" / "library.odin").is_file())
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_clone_resolves_a_non_default_remote_branch(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -515,7 +587,7 @@ class SecurityRegressionTests(unittest.TestCase):
             config = root / "gitconfig"
             write_git_config(config, bare)
             cache = root / "cache"
-            entry = cache / odindeps.cache_key("example.test/team/library", commit, ())
+            entry = cache / odindeps.cache_key("example.test/team/library", commit, (), ())
             entry.mkdir(parents=True)
             entry.joinpath("library.odin").write_text("package forged\n", encoding="utf-8")
             entry.joinpath(".odindeps-meta.json").write_text(
@@ -527,7 +599,7 @@ class SecurityRegressionTests(unittest.TestCase):
                         "git": "example.test/team/library",
                         "rev": "v1",
                         "commit": commit,
-                        "options": {"files": [], "cache_mode": "symlink"},
+                        "options": {"includes": [], "excludes": [], "cache_mode": "symlink"},
                     }
                 ),
                 encoding="utf-8",

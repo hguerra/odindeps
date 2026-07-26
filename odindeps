@@ -168,10 +168,15 @@ def sanitize_git_error(_: str) -> str:
     return "Git command failed"
 
 
-def cache_key(git: str, commit: str, files: Sequence[str]) -> str:
+def cache_key(git: str, commit: str, includes: Sequence[str], excludes: Sequence[str]) -> str:
     """Return a stable cache identity for immutable clone content."""
     encoded = json.dumps(
-        {"git": git.removesuffix(".git"), "commit": commit, "files": list(files)},
+        {
+            "git": git.removesuffix(".git"),
+            "commit": commit,
+            "includes": list(includes),
+            "excludes": list(excludes),
+        },
         sort_keys=True,
         separators=(",", ":"),
     )
@@ -215,16 +220,18 @@ def _validate_options(value: object, field: str) -> Mapping[str, object]:
             parsed_git["strategy"] = git["strategy"]
         if "clone" in git:
             clone = _mapping(git["clone"], f"{field}.git.clone")
-            _unknown_fields(clone, {"files"}, f"{field}.git.clone")
-            if "files" in clone:
-                files = clone["files"]
-                if not isinstance(files, list) or not files:
-                    raise ValidationError(f"{field}.git.clone.files must be a non-empty list of strings")
-                parsed_git["clone"] = {
-                    "files": [_clone_file_pattern(item, f"{field}.git.clone.files") for item in files]
-                }
-            else:
-                parsed_git["clone"] = {}
+            _unknown_fields(clone, {"includes", "excludes"}, f"{field}.git.clone")
+            parsed_clone: dict[str, object] = {}
+            for name in ("includes", "excludes"):
+                if name not in clone:
+                    continue
+                patterns = clone[name]
+                if not isinstance(patterns, list) or not patterns:
+                    raise ValidationError(f"{field}.git.clone.{name} must be a non-empty list of strings")
+                parsed_clone[name] = [
+                    _clone_file_pattern(item, f"{field}.git.clone.{name}") for item in patterns
+                ]
+            parsed_git["clone"] = parsed_clone
         if "subtree" in git:
             subtree = _mapping(git["subtree"], f"{field}.git.subtree")
             _unknown_fields(subtree, {"squash"}, f"{field}.git.subtree")
@@ -462,8 +469,16 @@ def _validate_cache_root(cache_root: Path) -> None:
         raise ConflictError("cache directory must not be group- or world-writable")
 
 
+def _clone_patterns(options: Mapping[str, object]) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    clone_options = options["git"].get("clone", {})
+    includes = tuple(sorted(set(clone_options.get("includes", ()))))
+    excludes = tuple(sorted(set(clone_options.get("excludes", ()))))
+    return includes, excludes
+
+
 def _clone_dependency(dependency: Dependency, options: Mapping[str, object], destination: Path, force: bool) -> None:
     remote = derive_remote(dependency.git or "", options["transport"])
+    includes, excludes = _clone_patterns(options)
     metadata: dict[str, object] = {
         "schema_version": 1,
         "name": dependency.name,
@@ -471,12 +486,11 @@ def _clone_dependency(dependency: Dependency, options: Mapping[str, object], des
         "git": _normalized_git(dependency.git or ""),
         "rev": dependency.rev,
         "options": {
-            "files": list(options["git"].get("clone", {}).get("files", ())),
+            "includes": list(includes),
+            "excludes": list(excludes),
             "cache_mode": options["cache"]["mode"],
         },
     }
-    clone_options = options["git"].get("clone", {})
-    files = tuple(clone_options.get("files", ()))
     if destination.exists() or destination.is_symlink():
         try:
             observed = json.loads(destination.joinpath(".odindeps-meta.json").read_text(encoding="utf-8"))
@@ -496,10 +510,16 @@ def _clone_dependency(dependency: Dependency, options: Mapping[str, object], des
         metadata["commit"] = resolved
         shutil.rmtree(staged / ".git")
         _validate_snapshot_tree(staged)
-        if files:
-            selected = [path for path in staged.rglob("*") if path.is_file() and any(_path_matches_pattern(path.relative_to(staged).as_posix(), pattern) for pattern in files)]
+        if includes or excludes:
+            selected = [
+                path
+                for path in staged.rglob("*")
+                if path.is_file()
+                and (not includes or any(_path_matches_pattern(path.relative_to(staged).as_posix(), pattern) for pattern in includes))
+                and not any(_path_matches_pattern(path.relative_to(staged).as_posix(), pattern) for pattern in excludes)
+            ]
             if not selected:
-                raise ValidationError(f"dependency {dependency.name!r} clone files matched no files")
+                raise ValidationError(f"dependency {dependency.name!r} clone filters matched no files")
             filtered = Path(staging_directory) / "filtered"
             filtered.mkdir()
             for path in selected:
@@ -511,7 +531,7 @@ def _clone_dependency(dependency: Dependency, options: Mapping[str, object], des
         _write_metadata(staged, metadata)
         if options["cache"]["mode"] == "symlink":
             cache_root = Path(os.path.expandvars(str(options["cache"]["directory"]))).expanduser()
-            entry = cache_root / cache_key(dependency.git or "", resolved, files)
+            entry = cache_root / cache_key(dependency.git or "", resolved, includes, excludes)
             _validate_cache_root(cache_root)
             staged_digest = _snapshot_digest(staged)
             if os.path.lexists(entry) and entry.is_symlink():
@@ -554,8 +574,8 @@ def _require_clean_repository(directory: Path) -> None:
 
 
 def _submodule_dependency(directory: Path, dependency: Dependency, options: Mapping[str, object], destination: Path, force: bool) -> None:
-    if options["cache"]["mode"] != "off" or options["git"].get("clone", {}).get("files"):
-        raise ValidationError(f"dependency {dependency.name!r} submodule does not support cache or clone files")
+    if options["cache"]["mode"] != "off" or options["git"].get("clone", {}):
+        raise ValidationError(f"dependency {dependency.name!r} submodule does not support cache or clone filters")
     remote = derive_remote(dependency.git or "", options["transport"])
     relative = destination.relative_to(directory).as_posix()
     if destination.exists():
@@ -584,8 +604,8 @@ def _submodule_dependency(directory: Path, dependency: Dependency, options: Mapp
 
 
 def _subtree_dependency(directory: Path, dependency: Dependency, options: Mapping[str, object], destination: Path, force: bool) -> None:
-    if options["cache"]["mode"] != "off" or options["git"].get("clone", {}).get("files"):
-        raise ValidationError(f"dependency {dependency.name!r} subtree does not support cache or clone files")
+    if options["cache"]["mode"] != "off" or options["git"].get("clone", {}):
+        raise ValidationError(f"dependency {dependency.name!r} subtree does not support cache or clone filters")
     _require_clean_repository(directory)
     remote = derive_remote(dependency.git or "", options["transport"])
     relative = destination.relative_to(directory).as_posix()
@@ -801,8 +821,8 @@ def parse_manifest(value: object, *, platform: str | None = None) -> Manifest:
         strategy = options_for_dependency["git"]["strategy"] if dependency.git else options_for_dependency["local"]["strategy"]
         if dependency.git and options_for_dependency["cache"]["mode"] == "symlink" and strategy != "clone":
             raise ValidationError(f"manifest.dependencies.{dependency.name} cache symlink requires Git clone")
-        if dependency.git and options_for_dependency["git"].get("clone", {}).get("files") and strategy != "clone":
-            raise ValidationError(f"manifest.dependencies.{dependency.name} clone files require Git clone")
+        if dependency.git and options_for_dependency["git"].get("clone", {}) and strategy != "clone":
+            raise ValidationError(f"manifest.dependencies.{dependency.name} clone filters require Git clone")
         cache_symlink = dependency.git is not None and options_for_dependency["cache"]["mode"] == "symlink"
         if platform_name.startswith("win") and (strategy == "symlink" or cache_symlink):
             raise ValidationError(f"manifest.dependencies.{dependency.name} symlink strategy is unsupported on Windows")

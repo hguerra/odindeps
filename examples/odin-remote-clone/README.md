@@ -18,8 +18,8 @@ Expected output is one structured JSON log record whose `message` is
 `project/odindeps.json` pins the source tag and materializes it at
 `project/src/third_party/slog`. The `-collection:deps=src/third_party` flag
 maps Odin's `import "deps:slog"` to that snapshot. The clone strategy intentionally omits the
-dependency's `.git` directory. Its `files` filter retains only `.odin` source
-files from the remote repository (plus odindeps ownership metadata). The
+dependency's `.git` directory. Its `includes` filter retains `.odin` source
+files, while `excludes` removes upstream test and example sources (plus odindeps ownership metadata). The
 application's domain logic lives in `project/src/myproject/logic.odin`; the
 main package only creates the logger and invokes that logic. To recreate the snapshot, delete
 `project/src/third_party/slog` and run `odindeps sync` again.
