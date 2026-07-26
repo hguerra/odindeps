@@ -53,6 +53,10 @@ jobs:
         run: |
           $version = $env:RELEASE_TAG.Substring(1)
           if ((python ./odindeps --version) -ne "odindeps $version") { exit 1 }
+          Copy-Item ./odindeps, ./odindeps.cmd $env:TEMP
+          Push-Location $env:TEMP
+          if ((.\odindeps.cmd --version) -ne "odindeps $version") { exit 1 }
+          Pop-Location
         if: runner.os == 'Windows'
   publish:
     needs: verify
@@ -64,25 +68,62 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with: {ref: '${{ needs.verify.outputs.commit }}', fetch-depth: 0, persist-credentials: false}
-      - run: sha256sum odindeps > odindeps.sha256
+      - run: sha256sum odindeps odindeps.cmd > odindeps.sha256
       - name: Publish immutable assets
         env: {GH_TOKEN: '${{ github.token }}'}
         shell: bash
         run: |
           test "$(git rev-parse "$RELEASE_TAG^{commit}")" = "$RELEASE_COMMIT"
+          version="${RELEASE_TAG#v}"
+          python3 - "$version" <<'PY' > release-notes.md
+          import sys
+          from pathlib import Path
+
+          version = sys.argv[1]
+          lines = Path("CHANGELOG.md").read_text(encoding="utf-8").splitlines()
+          release_heading = f"## [{version}]"
+          start = next(
+              (
+                  index
+                  for index, line in enumerate(lines)
+                  if line == release_heading or line.startswith(f"{release_heading} - ")
+              ),
+              None,
+          )
+          if start is None:
+              raise SystemExit(f"missing changelog section for {version}")
+          end = next(
+              (index for index in range(start + 1, len(lines)) if lines[index].startswith("## [")),
+              len(lines),
+          )
+          section = "\n".join(lines[start:end]).strip()
+          if section == release_heading:
+              raise SystemExit(f"empty changelog section for {version}")
+          print(section)
+          PY
           {
-            printf 'Release notes from CHANGELOG.md\n\n'
-            cat CHANGELOG.md
-            printf '\nVerify SHA-256 with: sha256sum --check odindeps.sha256\n'
-            printf 'Install: place odindeps on PATH and make it executable.\n'
-          } > release-notes.md
-          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release create "$RELEASE_TAG" odindeps odindeps.sha256 --verify-tag --title "$RELEASE_TAG" --notes-file release-notes.md
+            printf '\n\nVerify both assets with: sha256sum --check odindeps.sha256\n'
+            printf 'Install from: https://github.com/%s/releases/download/%s/odindeps\n' "$GITHUB_REPOSITORY" "$RELEASE_TAG"
+          } >> release-notes.md
+
+          release_state="$(gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft' 2>/dev/null || true)"
+          if [ -z "$release_state" ]; then
+            gh release create "$RELEASE_TAG" odindeps odindeps.cmd odindeps.sha256 --verify-tag --title "$RELEASE_TAG" --notes-file release-notes.md --draft
+            release_state=true
+          elif [ "$release_state" = true ]; then
+            gh release edit "$RELEASE_TAG" --title "$RELEASE_TAG" --notes-file release-notes.md
+            gh release upload "$RELEASE_TAG" odindeps odindeps.cmd odindeps.sha256 --clobber
           fi
+
           actual_assets="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' | sort)"
-          expected_assets="$(printf '%s\n' odindeps odindeps.sha256 | sort)"
+          expected_assets="$(printf '%s\n' odindeps odindeps.cmd odindeps.sha256 | sort)"
           test "$actual_assets" = "$expected_assets"
           mkdir -p downloaded
-          gh release download "$RELEASE_TAG" --pattern odindeps --pattern odindeps.sha256 --dir downloaded
+          gh release download "$RELEASE_TAG" --pattern odindeps --pattern odindeps.cmd --pattern odindeps.sha256 --dir downloaded
           (cd downloaded && sha256sum --check odindeps.sha256)
           cmp odindeps downloaded/odindeps
+          cmp odindeps.cmd downloaded/odindeps.cmd
+          if [ "$release_state" = true ]; then
+            gh release edit "$RELEASE_TAG" --draft=false
+          fi
+          test "$(gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft')" = false

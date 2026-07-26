@@ -6,26 +6,25 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import hashlib
-from collections.abc import Sequence
-from dataclasses import dataclass
-from functools import lru_cache
 import json
 import os
-from pathlib import Path
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import uuid
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from functools import lru_cache
+from pathlib import Path
 from types import MappingProxyType
 from typing import Mapping
-
 
 VERSION = "0.1.0"
 
 BUILT_IN_DEFAULTS = {
-    "destination_root": "src/third_party",
+    "destination_root": "third_party",
     "transport": "https",
     "git": {"strategy": "clone", "subtree": {"squash": True}},
     "cache": {"mode": "off", "directory": "~/.cache/odindeps"},
@@ -203,9 +202,7 @@ def _validate_options(value: object, field: str) -> Mapping[str, object]:
     _unknown_fields(options, {"destination_root", "transport", "git", "cache", "local"}, field)
     normalized: dict[str, object] = {}
     if "destination_root" in options:
-        normalized["destination_root"] = _destination_path(
-            options["destination_root"], f"{field}.destination_root"
-        )
+        normalized["destination_root"] = _destination_path(options["destination_root"], f"{field}.destination_root")
     if "transport" in options:
         transport = options["transport"]
         if transport not in ("https", "ssh"):
@@ -229,9 +226,7 @@ def _validate_options(value: object, field: str) -> Mapping[str, object]:
                 patterns = clone[name]
                 if not isinstance(patterns, list) or not patterns:
                     raise ValidationError(f"{field}.git.clone.{name} must be a non-empty list of strings")
-                parsed_clone[name] = [
-                    _clone_file_pattern(item, f"{field}.git.clone.{name}") for item in patterns
-                ]
+                parsed_clone[name] = [_clone_file_pattern(item, f"{field}.git.clone.{name}") for item in patterns]
             parsed_git["clone"] = parsed_clone
         if "subtree" in git:
             subtree = _mapping(git["subtree"], f"{field}.git.subtree")
@@ -381,7 +376,9 @@ def _copy_local_dependency(source: Path, destination: Path, metadata: Mapping[st
 def _run_git(*arguments: str, cwd: Path | None = None, environment: Mapping[str, str] | None = None) -> str:
     environment = {**os.environ, "GIT_TERMINAL_PROMPT": "0", **(environment or {})}
     try:
-        completed = subprocess.run(["git", *arguments], cwd=cwd, env=environment, capture_output=True, text=True, check=False)
+        completed = subprocess.run(
+            ["git", *arguments], cwd=cwd, env=environment, capture_output=True, text=True, check=False
+        )
     except OSError as error:
         raise GitError("Git executable is unavailable") from error
     if completed.returncode:
@@ -591,7 +588,9 @@ def _clone_dependency(dependency: Dependency, options: Mapping[str, object], des
                     raise ConflictError(f"dependency {dependency.name!r} cache entry does not match its identity")
                 _validate_snapshot_tree(entry, allow_metadata=True)
                 if _snapshot_digest(entry) != staged_digest:
-                    raise ConflictError(f"dependency {dependency.name!r} cache entry content does not match its identity")
+                    raise ConflictError(
+                        f"dependency {dependency.name!r} cache entry content does not match its identity"
+                    )
             target = Path(os.path.relpath(entry, destination.parent))
             if destination.is_symlink():
                 destination.unlink()
@@ -609,15 +608,44 @@ def _require_clean_repository(directory: Path) -> None:
         raise ConflictError("consuming Git repository must be clean")
 
 
-def _submodule_dependency(directory: Path, dependency: Dependency, options: Mapping[str, object], destination: Path, force: bool) -> None:
+def _subtree_is_managed(directory: Path, relative: str) -> bool:
+    """Return whether current HEAD contains Git subtree ownership trailers."""
+    directory_trailer = f"git-subtree-dir: {relative}"
+    history = _run_git(
+        "log",
+        "HEAD",
+        "--format=%B%x00",
+        "--fixed-strings",
+        f"--grep={directory_trailer}",
+        cwd=directory,
+    )
+    for message in history.split("\0"):
+        lines = {line.strip() for line in message.splitlines()}
+        if directory_trailer in lines and any(line.startswith("git-subtree-split: ") for line in lines):
+            return True
+    return False
+
+
+def _submodule_dependency(
+    directory: Path,
+    dependency: Dependency,
+    options: Mapping[str, object],
+    destination: Path,
+    force: bool,
+    prepare_repository: Callable[[], None],
+) -> None:
     if options["cache"]["mode"] != "off" or options["git"].get("clone", {}):
         raise ValidationError(f"dependency {dependency.name!r} submodule does not support cache or clone filters")
     remote = derive_remote(dependency.git or "", options["transport"])
     relative = destination.relative_to(directory).as_posix()
     if destination.exists():
         try:
-            declared_path = _run_git("config", "-f", ".gitmodules", "--get", f"submodule.{dependency.name}.path", cwd=directory)
-            declared_remote = _run_git("config", "-f", ".gitmodules", "--get", f"submodule.{dependency.name}.url", cwd=directory)
+            declared_path = _run_git(
+                "config", "-f", ".gitmodules", "--get", f"submodule.{dependency.name}.path", cwd=directory
+            )
+            declared_remote = _run_git(
+                "config", "-f", ".gitmodules", "--get", f"submodule.{dependency.name}.url", cwd=directory
+            )
             head = _run_git("-C", str(destination), "rev-parse", "HEAD")
             expected = _run_git("-C", str(destination), "rev-parse", f"{dependency.rev}^{{commit}}")
         except GitError:
@@ -627,7 +655,7 @@ def _submodule_dependency(directory: Path, dependency: Dependency, options: Mapp
             return
         if not managed or not force:
             raise ConflictError(f"dependency {dependency.name!r} submodule is not managed")
-    _require_clean_repository(directory)
+    prepare_repository()
     if destination.exists():
         _run_git("fetch", "--tags", "origin", cwd=destination)
         resolved = _resolve_git_revision(destination, dependency.rev or "")
@@ -639,19 +667,32 @@ def _submodule_dependency(directory: Path, dependency: Dependency, options: Mapp
     _run_git("add", ".gitmodules", relative, cwd=directory)
 
 
-def _subtree_dependency(directory: Path, dependency: Dependency, options: Mapping[str, object], destination: Path, force: bool) -> None:
+def _subtree_dependency(
+    directory: Path,
+    dependency: Dependency,
+    options: Mapping[str, object],
+    destination: Path,
+    force: bool,
+    prepare_repository: Callable[[], None],
+) -> None:
     if options["cache"]["mode"] != "off" or options["git"].get("clone", {}):
         raise ValidationError(f"dependency {dependency.name!r} subtree does not support cache or clone filters")
-    _require_clean_repository(directory)
     remote = derive_remote(dependency.git or "", options["transport"])
     relative = destination.relative_to(directory).as_posix()
     squash = options["git"].get("subtree", {}).get("squash", True)
-    if destination.exists() and not force:
-        message = _run_git("log", "-1", "--format=%B", cwd=directory)
-        if f"git-subtree-dir: {relative}" in message or message.startswith("Merge commit ") and message.rstrip().endswith(f"as '{relative}'"):
+    if destination.exists():
+        if not _subtree_is_managed(directory, relative):
+            raise ConflictError(f"dependency {dependency.name!r} subtree is not managed")
+        if not force:
             return
-        raise ConflictError(f"dependency {dependency.name!r} subtree already exists; use --force to pull")
-    arguments = ["subtree", "pull" if destination.exists() else "add", f"--prefix={relative}", remote, dependency.rev or ""]
+    prepare_repository()
+    arguments = [
+        "subtree",
+        "pull" if destination.exists() else "add",
+        f"--prefix={relative}",
+        remote,
+        dependency.rev or "",
+    ]
     if squash:
         arguments.append("--squash")
     _run_git(*arguments, cwd=directory)
@@ -732,7 +773,7 @@ def synchronize_manifest(
     manifest: Manifest | None = None,
     dependency_names: set[str] | None = None,
 ) -> None:
-    """Synchronize every declaration from a validated manifest."""
+    """Synchronize selected declarations, or every declaration when unfiltered."""
     manifest_path = directory / "odindeps.json"
     if manifest is None:
         try:
@@ -746,12 +787,14 @@ def synchronize_manifest(
         options = effective_options(manifest, dependency)
         destination = directory.joinpath(*options["destination_root"].split("/"), dependency.name)
         planned.append((dependency, options, destination))
+    if dependency_names is not None:
+        planned = [item for item in planned if item[0].name in dependency_names]
     resolved_directory = directory.resolve()
     for dependency, _, destination in planned:
         resolved_parent = destination.parent.resolve()
         if resolved_parent != resolved_directory and resolved_directory not in resolved_parent.parents:
             raise ConflictError(f"dependency {dependency.name!r} destination escapes the project directory")
-    # Validate every local boundary before the first mutation in the action loop.
+    # Validate every selected local boundary before the first mutation.
     for dependency, _, destination in planned:
         if dependency.path is None:
             continue
@@ -764,7 +807,7 @@ def synchronize_manifest(
         if source == destination or source in destination.parents or destination in source.parents:
             raise ConflictError(f"dependency {dependency.name!r} source and destination must not contain one another")
         _validate_snapshot_tree(source)
-    # Verify every Git remote and revision before any dependency is published.
+    # Verify every selected Git remote and revision before publication.
     for dependency, options, _ in planned:
         if dependency.git is None:
             continue
@@ -773,17 +816,44 @@ def synchronize_manifest(
             probe = Path(probe_directory) / "repository"
             _run_git("clone", "--no-checkout", "--no-single-branch", remote, str(probe))
             _resolve_git_revision(probe, dependency.rev or "")
-    for dependency, options, destination in planned:
-        if dependency_names is not None and dependency.name not in dependency_names:
-            continue
+    repository_prepared = False
+
+    def prepare_repository() -> None:
+        nonlocal repository_prepared
+        if repository_prepared:
+            return
+        _require_clean_repository(directory)
+        repository_prepared = True
+
+    def action_priority(item: tuple[Dependency, Mapping[str, object], Path]) -> int:
+        dependency, options, _ = item
+        if dependency.git is None:
+            return 2
+        return {"subtree": 0, "submodule": 1, "clone": 2}[options["git"]["strategy"]]
+
+    for dependency, options, destination in sorted(planned, key=action_priority):
         if dependency.git is not None:
             strategy = options["git"]["strategy"]
             if strategy == "clone":
                 _clone_dependency(dependency, options, destination, force)
             elif strategy == "submodule":
-                _submodule_dependency(directory, dependency, options, destination, force)
+                _submodule_dependency(
+                    directory,
+                    dependency,
+                    options,
+                    destination,
+                    force,
+                    prepare_repository,
+                )
             else:
-                _subtree_dependency(directory, dependency, options, destination, force)
+                _subtree_dependency(
+                    directory,
+                    dependency,
+                    options,
+                    destination,
+                    force,
+                    prepare_repository,
+                )
             continue
         source = Path(os.path.expandvars(dependency.path)).expanduser()
         if not source.is_absolute():
@@ -854,7 +924,9 @@ def parse_manifest(value: object, *, platform: str | None = None) -> Manifest:
     destinations: set[str] = set()
     for dependency in manifest.dependencies.values():
         options_for_dependency = effective_options(manifest, dependency)
-        strategy = options_for_dependency["git"]["strategy"] if dependency.git else options_for_dependency["local"]["strategy"]
+        strategy = (
+            options_for_dependency["git"]["strategy"] if dependency.git else options_for_dependency["local"]["strategy"]
+        )
         if dependency.git and options_for_dependency["cache"]["mode"] == "symlink" and strategy != "clone":
             raise ValidationError(f"manifest.dependencies.{dependency.name} cache symlink requires Git clone")
         if dependency.git and options_for_dependency["git"].get("clone", {}) and strategy != "clone":
@@ -899,7 +971,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(arguments: Sequence[str] | None = None) -> int:
-    """Run the command-line interface and reserve commands for later slices."""
+    """Run the command-line interface."""
     parser = build_parser()
     try:
         namespace = parser.parse_args(arguments)
@@ -953,7 +1025,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
         print("odindeps: dependency added")
         return 0
 
-    parser.exit(5, f"odindeps: {namespace.command} is not implemented yet\n")
+    print("odindeps: unexpected internal error", file=sys.stderr)
+    return InternalError.exit_code
 
 
 if __name__ == "__main__":

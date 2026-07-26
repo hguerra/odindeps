@@ -1,0 +1,19 @@
+#!/usr/bin/env sh
+set -eu
+
+cd "$(dirname "$0")/.."
+
+cleanup() {
+	:
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+formatter="${ODINFMT:-.bin/odinfmt}"
+if [ ! -x "$formatter" ]; then
+	echo "fmt: missing odinfmt; run 'mise run install' or set ODINFMT" >&2
+	exit 1
+fi
+"$formatter" src -config:odinfmt.json -w
+"$formatter" tests -config:odinfmt.json -w

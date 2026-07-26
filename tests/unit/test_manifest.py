@@ -9,7 +9,6 @@ from pathlib import Path
 
 from tests.unit.support import load_odindeps
 
-
 odindeps = load_odindeps()
 
 
@@ -67,7 +66,7 @@ class ManifestTests(unittest.TestCase):
         self.assertIsNone(re.fullmatch(destination_pattern, "C:/outside"))
         self.assertIsNotNone(re.fullmatch(git_pattern, "github.com/a/b"))
         self.assertIsNotNone(re.fullmatch(revision_pattern, "v1"))
-        self.assertIsNotNone(re.fullmatch(destination_pattern, "src/third_party"))
+        self.assertIsNotNone(re.fullmatch(destination_pattern, "third_party"))
         for name in ("includes", "excludes"):
             self.assertEqual(
                 clone_properties[name]["items"]["$ref"],

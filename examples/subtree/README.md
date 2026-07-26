@@ -46,7 +46,7 @@ git commit -m "Declare Odin dependencies"
 ```sh
 odindeps sync
 git status --short
-git log --oneline -- src/third_party/slog
+git log --oneline -- third_party/slog
 ```
 
 Unlike clone and submodule strategies, `git subtree add` creates a consuming
@@ -61,7 +61,7 @@ managed subtree pull:
 git add odindeps.json
 git commit -m "Update slog revision"
 odindeps sync --force
-git log --oneline -- src/third_party/slog
+git log --oneline -- third_party/slog
 ```
 
 Set `git.subtree.squash` to `false` only when importing the dependency's
@@ -74,6 +74,6 @@ in an explicit commit, or revert the subtree-add commit when that matches the
 repository's history policy:
 
 ```sh
-git rm -r src/third_party/slog
+git rm -r third_party/slog
 git commit -m "Remove slog subtree"
 ```

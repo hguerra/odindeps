@@ -7,40 +7,43 @@ direct Git and local path dependencies in Odin projects. The executable is one
 extensionless file and requires Python 3.11 or newer plus Git for Git
 dependencies.
 
-<details>
-<summary><strong>Install odindeps</strong></summary>
+## Install
 
-Release downloads are the recommended installation method after the first
-GitHub release is published. Until then, install from an existing source
-checkout as shown below.
+GitHub Releases are the recommended installation method. Each release contains
+the standalone Python script, a native-Windows command wrapper, and their
+SHA-256 checksums. Python 3.11 or newer is required; Git is required when a
+manifest contains Git dependencies.
 
 ### macOS and Linux
 
-Download the latest release, verify the published SHA-256 checksum, and install
-the executable under `$HOME/.local/bin`:
+Download a specific release, verify it, and atomically place it under
+`$HOME/.local/bin`:
 
 ```sh
+version="v0.1.0"
 install_directory="$HOME/.local/bin"
-download_directory="$(mktemp -d)"
-
 mkdir -p "$install_directory"
-curl --fail --location --proto '=https' --tlsv1.2 \
-  --output "$download_directory/odindeps" \
-  https://github.com/hguerra/odindeps/releases/latest/download/odindeps
-curl --fail --location --proto '=https' --tlsv1.2 \
-  --output "$download_directory/odindeps.sha256" \
-  https://github.com/hguerra/odindeps/releases/latest/download/odindeps.sha256
+staging_directory="$(mktemp -d "$install_directory/.odindeps-install.XXXXXX")"
+staged_executable="$staging_directory/odindeps"
+trap 'rm -rf "$staging_directory"' EXIT INT TERM
 
-expected_checksum="$(awk '{print $1}' "$download_directory/odindeps.sha256")"
+base_url="https://github.com/hguerra/odindeps/releases/download/$version"
+curl --fail --location --proto '=https' --tlsv1.2 \
+  --output "$staged_executable" "$base_url/odindeps"
+curl --fail --location --proto '=https' --tlsv1.2 \
+  --output "$staging_directory/odindeps.sha256" "$base_url/odindeps.sha256"
+
+expected_checksum="$(awk '$2 == "odindeps" {print $1}' "$staging_directory/odindeps.sha256")"
 if command -v sha256sum >/dev/null 2>&1; then
-  actual_checksum="$(sha256sum "$download_directory/odindeps" | awk '{print $1}')"
+  actual_checksum="$(sha256sum "$staged_executable" | awk '{print $1}')"
 else
-  actual_checksum="$(shasum -a 256 "$download_directory/odindeps" | awk '{print $1}')"
+  actual_checksum="$(shasum -a 256 "$staged_executable" | awk '{print $1}')"
 fi
 test "$actual_checksum" = "$expected_checksum"
 
-install -m 0755 "$download_directory/odindeps" "$install_directory/odindeps"
-rm -rf "$download_directory"
+chmod 0755 "$staged_executable"
+"$staged_executable" --version
+mv "$staged_executable" "$install_directory/odindeps"
 "$install_directory/odindeps" --version
 ```
 
@@ -51,40 +54,52 @@ export PATH="$HOME/.local/bin:$PATH"
 ```
 
 Add that export to the appropriate shell startup file if it should persist
-across terminal sessions.
+across terminal sessions. To upgrade, repeat the same procedure with a newer
+`version`.
+
+For convenience, GitHub also exposes the moving URLs
+`https://github.com/hguerra/odindeps/releases/latest/download/odindeps` and
+`https://github.com/hguerra/odindeps/releases/latest/download/odindeps.sha256`.
+Use the versioned URLs above for reproducible installation. A checksum obtained
+from the same release detects corruption or mismatched downloads; release
+immutability protects published assets from later replacement.
 
 ### Native Windows
 
-Download the same extensionless release asset, verify it, and invoke it
-explicitly through Python:
+Download the script and its `.cmd` wrapper into the installation directory:
 
 ```powershell
+$Version = "v0.1.0"
 $InstallDirectory = Join-Path $HOME ".local\bin"
-$DownloadDirectory = Join-Path ([System.IO.Path]::GetTempPath()) ("odindeps-" + [System.Guid]::NewGuid())
-$DownloadPath = Join-Path $DownloadDirectory "odindeps"
-$ChecksumPath = Join-Path $DownloadDirectory "odindeps.sha256"
-
 New-Item -ItemType Directory -Force $InstallDirectory | Out-Null
-New-Item -ItemType Directory -Force $DownloadDirectory | Out-Null
-Invoke-WebRequest `
-  https://github.com/hguerra/odindeps/releases/latest/download/odindeps `
-  -OutFile $DownloadPath
-Invoke-WebRequest `
-  https://github.com/hguerra/odindeps/releases/latest/download/odindeps.sha256 `
-  -OutFile $ChecksumPath
+$StagingDirectory = Join-Path $InstallDirectory (".odindeps-install-" + [System.Guid]::NewGuid())
+New-Item -ItemType Directory $StagingDirectory | Out-Null
+$BaseUrl = "https://github.com/hguerra/odindeps/releases/download/$Version"
 
-$ExpectedChecksum = ((Get-Content $ChecksumPath -Raw).Trim() -split "\s+")[0]
-$ActualChecksum = (Get-FileHash $DownloadPath -Algorithm SHA256).Hash
-if ($ActualChecksum -ne $ExpectedChecksum) {
-  throw "odindeps checksum verification failed"
+foreach ($Asset in @("odindeps", "odindeps.cmd", "odindeps.sha256")) {
+  Invoke-WebRequest "$BaseUrl/$Asset" -OutFile (Join-Path $StagingDirectory $Asset)
+}
+$PublishedChecksums = @{}
+Get-Content (Join-Path $StagingDirectory "odindeps.sha256") | ForEach-Object {
+  $Hash, $Name = $_ -split "\s+", 2
+  $PublishedChecksums[$Name.TrimStart("*")] = $Hash
+}
+foreach ($Asset in @("odindeps", "odindeps.cmd")) {
+  $ActualChecksum = (Get-FileHash (Join-Path $StagingDirectory $Asset) -Algorithm SHA256).Hash
+  if ($ActualChecksum -ne $PublishedChecksums[$Asset]) {
+    throw "odindeps checksum verification failed for $Asset"
+  }
 }
 
-Move-Item $DownloadPath (Join-Path $InstallDirectory "odindeps") -Force
-Remove-Item $DownloadDirectory -Recurse -Force
-python (Join-Path $InstallDirectory "odindeps") --version
+python (Join-Path $StagingDirectory "odindeps") --version
+Move-Item (Join-Path $StagingDirectory "odindeps") (Join-Path $InstallDirectory "odindeps") -Force
+Move-Item (Join-Path $StagingDirectory "odindeps.cmd") (Join-Path $InstallDirectory "odindeps.cmd") -Force
+Remove-Item $StagingDirectory -Recurse -Force
+& (Join-Path $InstallDirectory "odindeps.cmd") --version
 ```
 
-The first release does not provide a Windows executable wrapper.
+Add `$InstallDirectory` to the user `PATH` to invoke `odindeps` directly from a
+new terminal. Upgrades repeat the procedure with a newer `$Version`.
 
 ### Existing source checkout
 
@@ -103,10 +118,9 @@ On native Windows:
 $InstallDirectory = Join-Path $HOME ".local\bin"
 New-Item -ItemType Directory -Force $InstallDirectory | Out-Null
 Copy-Item .\odindeps (Join-Path $InstallDirectory "odindeps") -Force
-python (Join-Path $InstallDirectory "odindeps") --version
+Copy-Item .\odindeps.cmd (Join-Path $InstallDirectory "odindeps.cmd") -Force
+& (Join-Path $InstallDirectory "odindeps.cmd") --version
 ```
-
-</details>
 
 <details>
 <summary><strong>Remove odindeps</strong></summary>
@@ -121,6 +135,7 @@ On native Windows:
 
 ```powershell
 Remove-Item (Join-Path $HOME ".local\bin\odindeps")
+Remove-Item (Join-Path $HOME ".local\bin\odindeps.cmd")
 ```
 
 Uninstalling does not remove project dependencies or shared cache entries.
@@ -176,8 +191,8 @@ The resulting manifest is:
 }
 ```
 
-By default, the dependency is materialized at
-`src/third_party/slog`.
+By default, dependencies are materialized at `third_party/<name>`, so this
+dependency is available at `third_party/slog`.
 
 ## Commands
 
@@ -206,24 +221,42 @@ By default, the dependency is materialized at
     }
   },
   "defaults": {
-    "destination_root": "src/third_party"
+    "destination_root": "third_party"
   }
 }
 ```
 
 Configuration is merged from built-ins, manifest `defaults`, then
 per-dependency `options`. The checked-in `odindeps.schema.json` describes the
-manifest using JSON Schema Draft 2020-12.
+manifest using JSON Schema Draft 2020-12. Nested objects merge recursively;
+scalars and lists replace inherited values, so `includes` and `excludes` are
+never concatenated across scopes.
 
 For clone snapshots, `options.git.clone.includes` selects relative POSIX globs
 and `excludes` removes matches after inclusion. When `includes` is omitted all
 regular files are candidates; a configured filter set must leave at least one
-file. The legacy `files` field is not accepted.
+file. Patterns match relative POSIX paths: `LICENSE` selects that exact name,
+not `LICENSE.md` or another variant. The legacy `files` field is not accepted.
+
+Root-level dependencies work naturally as an external Odin collection:
+
+```text
+import "third_party:slog"
+odin run src -collection:third_party=third_party
+```
+
+Projects that explicitly set `"destination_root": "src/third_party"` can
+instead import from a source package with a relative path such as
+`import "./third_party/slog"` and build without `-collection`. Collections keep
+imports stable across nested packages; relative imports keep the build command
+short but couple imports to the source tree's physical layout.
 
 ## Strategy guides
 
 | Strategy | Guide | Important effect |
 | --- | --- | --- |
+| Odin collection import | [Complete Odin project](examples/odin-collection-import/README.md) | Uses root-level `third_party:slog` with a deterministic POSIX harness. |
+| Odin relative import | [Compact Odin project](examples/odin-relative-import/README.md) | Overrides the destination into `src` and needs no collection flag. |
 | Clone snapshot | [Clone example](examples/clone/README.md) | Publishes source without `.git`. |
 | Local copy or symlink | [Local example](examples/local/README.md) | Copies everywhere; symlinks only on POSIX. |
 | Cached clone symlink | [Cache example](examples/cache-symlink/README.md) | Creates a machine-local permanent symlink. |
@@ -234,7 +267,9 @@ file. The legacy `files` field is not accepted.
 
 Git clone, submodule, subtree, and local copy are supported on macOS, Linux,
 and native Windows when the required Git capability exists. Local and cache
-symlinks are unsupported on native Windows.
+symlinks are unsupported on native Windows. The complete Odin example's shell
+harness supports macOS and Linux; its README provides direct native-Windows
+commands for the portable source project.
 
 Exit codes are `2` for validation, `3` for unsafe conflicts, `4` for Git
 failures, and `5` for filesystem failures. `uv.lock` belongs only to the Python

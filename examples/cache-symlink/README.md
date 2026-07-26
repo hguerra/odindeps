@@ -34,15 +34,15 @@ Create `odindeps.json`:
 Ignore the generated project link:
 
 ```sh
-printf '/src/third_party/slog\n' >> .gitignore
+printf '/third_party/slog\n' >> .gitignore
 ```
 
 ## 2. Synchronize and inspect
 
 ```sh
 odindeps sync
-test -L src/third_party/slog
-readlink src/third_party/slog
+test -L third_party/slog
+readlink third_party/slog
 ```
 
 The cache key includes the normalized Git locator, resolved commit, and clone
@@ -68,7 +68,7 @@ collection.
 Remove the project symlink first:
 
 ```sh
-rm src/third_party/slog
+rm third_party/slog
 ```
 
 Uninstalling `odindeps` does not remove shared cache entries. Delete

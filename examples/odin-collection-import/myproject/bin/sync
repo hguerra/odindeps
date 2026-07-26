@@ -1,0 +1,13 @@
+#!/usr/bin/env sh
+set -eu
+
+cd "$(dirname "$0")/.."
+
+cleanup() {
+	:
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+"${ODINDEPS:-../../../odindeps}" sync

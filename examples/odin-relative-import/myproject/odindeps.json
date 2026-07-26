@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "dependencies": {
+    "slog": {
+      "git": "github.com/hguerra/odin-slog",
+      "rev": "v0.0.1"
+    }
+  },
+  "defaults": {
+    "destination_root": "src/third_party",
+    "git": {
+      "clone": {
+        "includes": ["**/*.odin", "LICENSE"],
+        "excludes": ["**/*_test.odin", "tests/**", "examples/**"]
+      }
+    }
+  }
+}

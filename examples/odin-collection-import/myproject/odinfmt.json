@@ -1,0 +1,8 @@
+{
+  "character_width": 100,
+  "tabs": true,
+  "tabs_width": 4,
+  "brace_style": "_1TBS",
+  "convert_do": true,
+  "sort_imports": true
+}

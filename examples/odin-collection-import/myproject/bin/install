@@ -1,0 +1,85 @@
+#!/usr/bin/env sh
+set -eu
+
+cd "$(dirname "$0")/.."
+
+download_directory="$(mktemp -d "${TMPDIR:-/tmp}/odin-collection-import-install.XXXXXX")"
+cleanup() {
+	rm -rf "$download_directory"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+mkdir -p .bin
+
+install_odinfmt() {
+	ols_version="dev-2026-06"
+	os="$(uname -s)"
+	architecture="$(uname -m)"
+
+	case "$os" in
+		Linux)
+			case "$architecture" in
+				x86_64)
+					suffix="x86_64-unknown-linux-gnu"
+					expected_checksum="d0b232947a258032979321626a54c3dba54e44ebd23be255a34eb254dfc679a3"
+					;;
+				aarch64 | arm64)
+					suffix="arm64-unknown-linux-gnu"
+					expected_checksum="423c28323223d229dea3b69bc49679dbadd6e4559dc5d6b50eb10ac708f9c9eb"
+					;;
+				*)
+					echo "install: unsupported Linux architecture: $architecture" >&2
+					exit 1
+					;;
+			esac
+			;;
+		Darwin)
+			case "$architecture" in
+				x86_64)
+					suffix="x86_64-darwin"
+					expected_checksum="2e2d3c168ae8dc56d76574a95ebd998f7764b21d5da4dc1f4a66b1e880acbc9b"
+					;;
+				arm64)
+					suffix="arm64-darwin"
+					expected_checksum="931bca3776491e7809fc5054fad1c95459c25e62af5492294b84c5950c1a5e36"
+					;;
+				*)
+					echo "install: unsupported macOS architecture: $architecture" >&2
+					exit 1
+					;;
+			esac
+			;;
+		*)
+			echo "install: the POSIX harness supports only Linux and macOS" >&2
+			exit 1
+			;;
+	esac
+
+	archive="ols-${suffix}.zip"
+	executable="odinfmt-${suffix}"
+	url="https://github.com/DanielGavin/ols/releases/download/${ols_version}/${archive}"
+
+	echo "install: downloading $url" >&2
+	curl -fsSL -o "$download_directory/$archive" "$url"
+	actual_checksum="$(
+		python3 - "$download_directory/$archive" <<'PY'
+import hashlib
+from pathlib import Path
+import sys
+
+print(hashlib.sha256(Path(sys.argv[1]).read_bytes()).hexdigest())
+PY
+	)"
+	if [ "$actual_checksum" != "$expected_checksum" ]; then
+		echo "install: checksum mismatch for $archive" >&2
+		exit 1
+	fi
+	unzip -o -q "$download_directory/$archive" "$executable" -d "$download_directory"
+	mv "$download_directory/$executable" .bin/odinfmt
+	chmod +x .bin/odinfmt
+	echo "install: installed .bin/odinfmt (ols $ols_version, $suffix)" >&2
+}
+
+install_odinfmt

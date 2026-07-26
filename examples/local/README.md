@@ -30,7 +30,7 @@ Create `odindeps.json`:
 odindeps sync
 ```
 
-The independent snapshot is at `src/third_party/shared`. Later source changes
+The independent snapshot is at `third_party/shared`. Later source changes
 are applied only when explicitly refreshed:
 
 ```sh
@@ -59,7 +59,7 @@ On macOS or Linux, select the symlink strategy before the first sync:
 
 ```sh
 odindeps sync
-readlink src/third_party/shared
+readlink third_party/shared
 ```
 
 The link is relative when possible. Native Windows rejects this strategy
@@ -70,9 +70,9 @@ during validation and never falls back to copying.
 Remove only the project entry. This does not modify the original source:
 
 ```sh
-if test -L src/third_party/shared; then
-  rm src/third_party/shared
+if test -L third_party/shared; then
+  rm third_party/shared
 else
-  rm -rf src/third_party/shared
+  rm -rf third_party/shared
 fi
 ```

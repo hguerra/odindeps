@@ -6,7 +6,6 @@ import unittest
 
 from tests.unit.support import load_odindeps
 
-
 odindeps = load_odindeps()
 
 

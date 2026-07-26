@@ -1,0 +1,48 @@
+#!/usr/bin/env sh
+set -eu
+
+cd "$(dirname "$0")/.."
+
+if [ ! -d third_party/slog ]; then
+	echo "smoke: missing third_party/slog; run 'mise run sync' first" >&2
+	exit 1
+fi
+
+build_directory="$(mktemp -d "${TMPDIR:-/tmp}/odin-collection-import-smoke.XXXXXX")"
+binary="$build_directory/myproject"
+output="$build_directory/output.json"
+cleanup() {
+	rm -rf "$build_directory"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+flags="-vet -strict-style -vet-tabs -disallow-do -warnings-as-errors"
+odin build src -out:"$binary" $flags -collection:third_party=third_party
+"$binary" >"$output"
+
+python3 - "$output" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+lines = Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
+if len(lines) != 1:
+    raise SystemExit(f"smoke: expected one JSON log line, got {len(lines)}")
+
+record = json.loads(lines[0])
+expected = {
+    "severity": "INFO",
+    "message": "order total calculated",
+    "unit_price_cents": 2500,
+    "quantity": 3,
+    "discount_percent": 10,
+    "total_cents": 6750,
+}
+for key, value in expected.items():
+    if record.get(key) != value:
+        raise SystemExit(
+            f"smoke: expected {key}={value!r}, got {record.get(key)!r}"
+        )
+PY

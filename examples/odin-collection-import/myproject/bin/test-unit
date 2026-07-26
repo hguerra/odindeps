@@ -1,0 +1,21 @@
+#!/usr/bin/env sh
+set -eu
+
+cd "$(dirname "$0")/.."
+
+cleanup() {
+	:
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+if [ ! -d third_party/slog ]; then
+	echo "test-unit: missing third_party/slog; run 'mise run sync' first" >&2
+	exit 1
+fi
+
+flags="-vet -strict-style -vet-tabs -disallow-do -warnings-as-errors \
+	-define:ODIN_TEST_RANDOM_SEED=12345 \
+	-define:ODIN_TEST_FAIL_ON_BAD_MEMORY=true"
+odin test tests/unit -all-packages $flags -collection:third_party=third_party

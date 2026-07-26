@@ -1,0 +1,19 @@
+#!/usr/bin/env sh
+set -eu
+
+cd "$(dirname "$0")/.."
+
+cleanup() {
+	:
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+if [ ! -d third_party/slog ]; then
+	echo "run: missing third_party/slog; run 'mise run sync' first" >&2
+	exit 1
+fi
+
+flags="-vet -strict-style -vet-tabs -disallow-do -warnings-as-errors"
+odin run src $flags -collection:third_party=third_party

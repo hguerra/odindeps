@@ -10,7 +10,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-
 SCRIPT = Path(__file__).resolve().parents[2] / "odindeps"
 
 
@@ -32,20 +31,33 @@ class CloneTests(unittest.TestCase):
             git(source, "commit", "-m", "fixture")
             git(source, "tag", "v1")
             bare = root / "remote.git"
-            subprocess.run(["git", "clone", "--bare", str(source), str(bare)], check=True, capture_output=True, text=True)
+            subprocess.run(
+                ["git", "clone", "--bare", str(source), str(bare)], check=True, capture_output=True, text=True
+            )
             project = root / "project"
             project.mkdir()
             project.joinpath("odindeps.json").write_text(
-                json.dumps({"schema_version": 1, "dependencies": {"library": {"git": "example.test/team/library", "rev": "v1"}}}),
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "dependencies": {"library": {"git": "example.test/team/library", "rev": "v1"}},
+                    }
+                ),
                 encoding="utf-8",
             )
             config = root / "gitconfig"
-            config.write_text(f'[url "file://{bare}"]\n\tinsteadOf = https://example.test/team/library.git\n', encoding="utf-8")
+            config.write_text(
+                f'[url "file://{bare}"]\n\tinsteadOf = https://example.test/team/library.git\n', encoding="utf-8"
+            )
             environment = {**os.environ, "GIT_CONFIG_GLOBAL": str(config), "GIT_TERMINAL_PROMPT": "0"}
 
-            result = subprocess.run([sys.executable, str(SCRIPT), "sync"], cwd=project, env=environment, capture_output=True, text=True)
-            destination = project / "src" / "third_party" / "library"
-            second = subprocess.run([sys.executable, str(SCRIPT), "sync"], cwd=project, env=environment, capture_output=True, text=True)
+            result = subprocess.run(
+                [sys.executable, str(SCRIPT), "sync"], cwd=project, env=environment, capture_output=True, text=True
+            )
+            destination = project / "third_party" / "library"
+            second = subprocess.run(
+                [sys.executable, str(SCRIPT), "sync"], cwd=project, env=environment, capture_output=True, text=True
+            )
             metadata = json.loads(destination.joinpath(".odindeps-meta.json").read_text(encoding="utf-8"))
 
             self.assertTrue(destination.joinpath("library.odin").is_file())
@@ -69,20 +81,35 @@ class CloneTests(unittest.TestCase):
             git(source, "add", ".")
             git(source, "commit", "-m", "fixture")
             bare = root / "remote.git"
-            subprocess.run(["git", "clone", "--bare", str(source), str(bare)], check=True, capture_output=True, text=True)
+            subprocess.run(
+                ["git", "clone", "--bare", str(source), str(bare)], check=True, capture_output=True, text=True
+            )
             cache = root / "cache"
             config = root / "gitconfig"
-            config.write_text(f'[url "file://{bare}"]\n\tinsteadOf = https://example.test/team/library.git\n', encoding="utf-8")
+            config.write_text(
+                f'[url "file://{bare}"]\n\tinsteadOf = https://example.test/team/library.git\n', encoding="utf-8"
+            )
             environment = {**os.environ, "GIT_CONFIG_GLOBAL": str(config), "GIT_TERMINAL_PROMPT": "0"}
-            manifest = {"schema_version": 1, "dependencies": {"library": {"git": "example.test/team/library", "rev": "HEAD", "options": {"cache": {"mode": "symlink", "directory": str(cache)}}}}}
+            manifest = {
+                "schema_version": 1,
+                "dependencies": {
+                    "library": {
+                        "git": "example.test/team/library",
+                        "rev": "HEAD",
+                        "options": {"cache": {"mode": "symlink", "directory": str(cache)}},
+                    }
+                },
+            }
             projects = []
             for name in ("one", "two"):
                 project = root / name
                 project.mkdir()
                 project.joinpath("odindeps.json").write_text(json.dumps(manifest), encoding="utf-8")
-                result = subprocess.run([sys.executable, str(SCRIPT), "sync"], cwd=project, env=environment, capture_output=True, text=True)
+                result = subprocess.run(
+                    [sys.executable, str(SCRIPT), "sync"], cwd=project, env=environment, capture_output=True, text=True
+                )
                 self.assertEqual(result.returncode, 0, result.stderr)
-                projects.append(project / "src" / "third_party" / "library")
+                projects.append(project / "third_party" / "library")
             entries = list(cache.iterdir())
             entry_count = len(entries)
             links_are_present = all(project.is_symlink() for project in projects)

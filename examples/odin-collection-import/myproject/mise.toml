@@ -1,0 +1,35 @@
+[tools]
+odin = "dev-2026-07a"
+
+[tasks.install]
+run = "./bin/install"
+
+[tasks.sync]
+run = "./bin/sync"
+
+[tasks.run]
+run = "./bin/run"
+
+[tasks.fmt]
+run = "./bin/fmt"
+
+[tasks.fmt-check]
+run = "./bin/fmt-check"
+
+[tasks.check]
+run = "./bin/check"
+
+[tasks.test-unit]
+run = "./bin/test-unit"
+
+[tasks.test-integration]
+run = "./bin/test-integration"
+
+[tasks.test]
+run = "./bin/check"
+
+[tasks.smoke]
+run = "./bin/smoke"
+
+[tasks.verify]
+run = "./bin/verify"

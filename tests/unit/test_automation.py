@@ -7,7 +7,6 @@ import shlex
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW_PATHS = (
     ROOT / ".github/workflows/ci.yml",
@@ -26,7 +25,7 @@ REVIEWED_ACTION_PINS = {
         "v2",
     ),
 }
-EXPECTED_RELEASE_ASSETS = ("odindeps", "odindeps.sha256")
+EXPECTED_RELEASE_ASSETS = ("odindeps", "odindeps.cmd", "odindeps.sha256")
 
 
 def read(path: Path) -> str:
@@ -142,9 +141,7 @@ class AutomationTests(unittest.TestCase):
     def test_all_uv_invocations_use_the_locked_project_environment(self) -> None:
         sources = [read(ROOT / "mise.toml"), *(read(path) for path in WORKFLOW_PATHS)]
         invocations = [
-            match.group(0)
-            for source in sources
-            for match in re.finditer(r"\buv\s+(?:run|sync)\b[^&;\n]*", source)
+            match.group(0) for source in sources for match in re.finditer(r"\buv\s+(?:run|sync)\b[^&;\n]*", source)
         ]
 
         self.assertTrue(invocations, "expected at least one uv invocation")
@@ -159,6 +156,25 @@ class AutomationTests(unittest.TestCase):
         self.assertIn("#!/usr/bin/env python3", scripts)
         self.assertRegex(scripts, r"(?m)(?:^|&&\s*)/tmp/odindeps --help(?:\s*&&|$)")
         self.assertNotRegex(scripts, r"\bpython3?\s+/tmp/odindeps\b")
+        self.assertIn("odindeps.cmd --help", scripts)
+
+    def test_ci_runs_both_odin_examples_end_to_end(self) -> None:
+        workflow = read(ROOT / ".github/workflows/ci.yml")
+        examples = job_body(workflow, "odin-examples")
+        scripts = "\n".join(run_scripts("  odin-examples:\n" + examples))
+
+        self.assertIn("ubuntu-latest, macos-latest, windows-latest", examples)
+        self.assertIn("examples/odin-collection-import/myproject", examples)
+        self.assertIn("examples/odin-relative-import/myproject", examples)
+        for command in (
+            "mise run install",
+            "mise run sync",
+            "mise run verify",
+            "python ../../../odindeps sync",
+            "odin run src",
+        ):
+            with self.subTest(command=command):
+                self.assertIn(command, scripts)
 
     def test_manual_release_tag_enters_shell_only_through_environment(self) -> None:
         workflow = read(ROOT / ".github/workflows/release.yml")
@@ -242,60 +258,62 @@ class AutomationTests(unittest.TestCase):
 
     def test_release_uses_changelog_notes_with_checksum_and_installation_text(self) -> None:
         workflow = read(ROOT / ".github/workflows/release.yml")
-        publish_script = "\n".join(
-            run_scripts("  publish:\n" + job_body(workflow, "publish"))
-        )
+        publish_script = "\n".join(run_scripts("  publish:\n" + job_body(workflow, "publish")))
 
         self.assertIn("CHANGELOG.md", publish_script)
         self.assertIn("--notes-file", publish_script)
         self.assertNotIn("--generate-notes", publish_script)
+        self.assertNotIn("cat CHANGELOG.md", publish_script)
+        self.assertIn("release_heading", publish_script)
         self.assertRegex(publish_script, r"(?i)SHA-?256")
         self.assertRegex(publish_script, r"(?i)install")
         self.assertIn("odindeps.sha256", publish_script)
 
-    def test_release_create_verifies_existing_tag_and_names_exactly_two_assets(self) -> None:
+    def test_release_create_verifies_existing_tag_and_names_the_exact_assets(self) -> None:
         publish_script = "\n".join(
-            run_scripts(
-                "  publish:\n"
-                + job_body(read(ROOT / ".github/workflows/release.yml"), "publish")
-            )
+            run_scripts("  publish:\n" + job_body(read(ROOT / ".github/workflows/release.yml"), "publish"))
         )
 
         self.assertIn("--verify-tag", publish_script)
         self.assertEqual(release_create_assets(publish_script), EXPECTED_RELEASE_ASSETS)
 
     def test_release_asset_contract_rejects_an_extra_asset(self) -> None:
-        fixture = (
-            'gh release create "$RELEASE_TAG" odindeps odindeps.sha256 '
-            'unexpected.zip --verify-tag'
-        )
+        fixture = 'gh release create "$RELEASE_TAG" odindeps odindeps.cmd odindeps.sha256 unexpected.zip --verify-tag'
 
         self.assertNotEqual(release_create_assets(fixture), EXPECTED_RELEASE_ASSETS)
 
     def test_release_enumerates_and_verifies_uploaded_assets(self) -> None:
         publish_script = "\n".join(
-            run_scripts(
-                "  publish:\n"
-                + job_body(read(ROOT / ".github/workflows/release.yml"), "publish")
-            )
+            run_scripts("  publish:\n" + job_body(read(ROOT / ".github/workflows/release.yml"), "publish"))
         )
         create_position = publish_script.index("gh release create ")
         post_create = publish_script[create_position:]
 
         self.assertIn("--json assets", post_create)
         self.assertIn(".assets[].name", post_create)
-        self.assertIn("printf '%s\\n' odindeps odindeps.sha256", post_create)
+        self.assertIn("printf '%s\\n' odindeps odindeps.cmd odindeps.sha256", post_create)
         self.assertIn('test "$actual_assets" = "$expected_assets"', post_create)
         self.assertIn("gh release download", post_create)
         self.assertIn("--pattern odindeps", post_create)
+        self.assertIn("--pattern odindeps.cmd", post_create)
         self.assertIn("--pattern odindeps.sha256", post_create)
         self.assertRegex(post_create, r"sha256sum\s+--check\b")
         self.assertRegex(post_create, r"\bcmp\s+odindeps\s+\S+/odindeps\b")
+        self.assertRegex(post_create, r"\bcmp\s+odindeps\.cmd\s+\S+/odindeps\.cmd\b")
+
+    def test_release_recovers_a_draft_and_publishes_only_after_asset_verification(self) -> None:
+        publish_script = "\n".join(
+            run_scripts("  publish:\n" + job_body(read(ROOT / ".github/workflows/release.yml"), "publish"))
+        )
+
+        self.assertIn("--draft", publish_script)
+        self.assertIn("gh release upload", publish_script)
+        self.assertIn("--clobber", publish_script)
+        self.assertIn('gh release edit "$RELEASE_TAG" --draft=false', publish_script)
+        self.assertLess(publish_script.index("sha256sum --check"), publish_script.index("--draft=false"))
 
     def test_release_rechecks_the_copied_posix_executable_directly(self) -> None:
-        scripts = "\n".join(
-            run_scripts(read(ROOT / ".github/workflows/release.yml"))
-        )
+        scripts = "\n".join(run_scripts(read(ROOT / ".github/workflows/release.yml")))
 
         self.assertRegex(scripts, r"(?m)(?:^|&&\s*)/tmp/odindeps --help(?:\s*&&|$)")
         self.assertNotRegex(scripts, r"\bpython3?\s+/tmp/odindeps\b")
@@ -306,6 +324,7 @@ class AutomationTests(unittest.TestCase):
 
         self.assertIn("fetch-depth: 0", publish)
         self.assertIn("python ./odindeps --version", release)
+        self.assertIn("odindeps.cmd --version", release)
         self.assertNotIn("& ./odindeps --version", release)
 
     def test_contributing_documents_the_reviewed_version_contract(self) -> None:

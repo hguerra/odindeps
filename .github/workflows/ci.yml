@@ -22,5 +22,56 @@ jobs:
         run: test -x odindeps && test "$(head -n 1 odindeps)" = '#!/usr/bin/env python3' && cp odindeps /tmp/odindeps && /tmp/odindeps --help
         if: runner.os != 'Windows'
       - shell: pwsh
-        run: Copy-Item odindeps $env:TEMP/odindeps; python $env:TEMP/odindeps --help
+        run: |
+          Copy-Item odindeps, odindeps.cmd $env:TEMP
+          python $env:TEMP/odindeps --help
+          Push-Location $env:TEMP
+          .\odindeps.cmd --help
+          Pop-Location
+        if: runner.os == 'Windows'
+  odin-examples:
+    strategy:
+      fail-fast: false
+      matrix: {os: [ubuntu-latest, macos-latest, windows-latest]}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with: {persist-credentials: false}
+      - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2
+      - working-directory: examples/odin-collection-import/myproject
+        run: mise install
+      - working-directory: examples/odin-collection-import/myproject
+        run: |
+          mise run install
+          mise run sync
+          test -f third_party/slog/LICENSE
+          test -f third_party/slog/slog.odin
+          test ! -e third_party/slog/tests
+          test ! -e third_party/slog/examples
+          test ! -e third_party/slog/json_internal_test.odin
+          test ! -e third_party/slog/.git
+          mise run verify
+        if: runner.os != 'Windows'
+      - working-directory: examples/odin-collection-import/myproject
+        shell: pwsh
+        run: |
+          python ../../../odindeps sync
+          $Flags = @("-vet", "-strict-style", "-vet-tabs", "-disallow-do", "-warnings-as-errors")
+          mise exec -- odin check src @Flags "-collection:third_party=third_party"
+          mise exec -- odin test tests -all-packages @Flags "-define:ODIN_TEST_RANDOM_SEED=12345" "-define:ODIN_TEST_FAIL_ON_BAD_MEMORY=true" "-collection:third_party=third_party"
+          mise exec -- odin run src @Flags "-collection:third_party=third_party"
+        if: runner.os == 'Windows'
+      - working-directory: examples/odin-relative-import/myproject
+        run: |
+          python ../../../odindeps sync
+          test -f src/third_party/slog/LICENSE
+          test ! -e src/third_party/slog/tests
+          test ! -e src/third_party/slog/examples
+          mise exec odin@dev-2026-07a -- odin run src
+        if: runner.os != 'Windows'
+      - working-directory: examples/odin-relative-import/myproject
+        shell: pwsh
+        run: |
+          python ../../../odindeps sync
+          mise exec odin@dev-2026-07a -- odin run src
         if: runner.os == 'Windows'

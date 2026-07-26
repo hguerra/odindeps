@@ -43,10 +43,10 @@ git commit -m "Declare Odin dependencies"
 odindeps sync
 git status --short
 git submodule status
-git -C src/third_party/slog rev-parse HEAD
+git -C third_party/slog rev-parse HEAD
 ```
 
-The command stages `.gitmodules` and the `src/third_party/slog` gitlink. It does
+The command stages `.gitmodules` and the `third_party/slog` gitlink. It does
 not create a consuming-repository commit:
 
 ```sh
@@ -70,8 +70,8 @@ Dirty or unowned submodules are rejected even with `--force`.
 ## 4. Clean up
 
 ```sh
-git submodule deinit -f -- src/third_party/slog
-git rm -f -- src/third_party/slog
+git submodule deinit -f -- third_party/slog
+git rm -f -- third_party/slog
 rm -rf .git/modules/slog
 git commit -m "Remove slog submodule"
 ```

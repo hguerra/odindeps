@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import stat
 import subprocess
@@ -12,7 +13,6 @@ import unittest
 from importlib.machinery import SourceFileLoader
 from importlib.util import module_from_spec, spec_from_loader
 from pathlib import Path
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = PROJECT_ROOT / "odindeps"
@@ -57,6 +57,14 @@ class CliTests(unittest.TestCase):
     def test_executable_has_the_portable_shebang_and_user_execute_permission(self) -> None:
         self.assertEqual(SCRIPT.read_text(encoding="utf-8").splitlines()[0], "#!/usr/bin/env python3")
         self.assertTrue(SCRIPT.stat().st_mode & stat.S_IXUSR)
+
+    def test_windows_wrapper_invokes_the_adjacent_extensionless_script(self) -> None:
+        wrapper = PROJECT_ROOT / "odindeps.cmd"
+
+        self.assertEqual(
+            wrapper.read_text(encoding="utf-8"),
+            '@echo off\npython "%~dp0odindeps" %*\n',
+        )
 
     def test_module_load_does_not_run_the_command_line_interface(self) -> None:
         loader = SourceFileLoader("odindeps_under_test", str(SCRIPT))
@@ -136,7 +144,7 @@ class CliTests(unittest.TestCase):
             result = self.run_in_directory(directory, "add", "--path", str(source), "--rev", "v1")
 
             self.assertFalse((directory / "odindeps.json").exists())
-            self.assertFalse((directory / "src" / "third_party" / "source").exists())
+            self.assertFalse((directory / "third_party" / "source").exists())
         self.assertEqual(result.returncode, 2)
 
     def test_identical_add_materializes_a_missing_path_dependency(self) -> None:
@@ -156,7 +164,7 @@ class CliTests(unittest.TestCase):
 
             result = self.run_in_directory(directory, "add", "--path", str(source))
 
-            materialized = (directory / "src" / "third_party" / "source").is_dir()
+            materialized = (directory / "third_party" / "source").is_dir()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(materialized)
 
@@ -186,11 +194,65 @@ class CliTests(unittest.TestCase):
                 "added",
             )
 
-            existing_destination = directory / "src" / "third_party" / "existing"
-            added_destination = directory / "src" / "third_party" / "added"
+            existing_destination = directory / "third_party" / "existing"
+            added_destination = directory / "third_party" / "added"
             self.assertFalse(existing_destination.exists())
             self.assertTrue(added_destination.is_dir())
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_add_does_not_probe_an_unrelated_git_dependency(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            directory = Path(temporary_directory)
+            added_source = directory / "added-source"
+            added_source.mkdir()
+            directory.joinpath("odindeps.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "dependencies": {
+                            "unavailable": {
+                                "git": "unavailable.test/team/library",
+                                "rev": "v1",
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            git_config = directory / "gitconfig"
+            git_config.write_text(
+                '[url "file:///definitely/missing"]\n\tinsteadOf = https://unavailable.test/team/library.git\n',
+                encoding="utf-8",
+            )
+            environment = {
+                **os.environ,
+                "GIT_CONFIG_GLOBAL": str(git_config),
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_TERMINAL_PROMPT": "0",
+            }
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "add",
+                    "--path",
+                    str(added_source),
+                    "--name",
+                    "added",
+                ],
+                check=False,
+                capture_output=True,
+                cwd=directory,
+                env=environment,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(directory.joinpath("third_party/added").is_dir())
+            manifest = json.loads(directory.joinpath("odindeps.json").read_text(encoding="utf-8"))
+            self.assertIn("unavailable", manifest["dependencies"])
+            self.assertIn("added", manifest["dependencies"])
 
     def test_add_reports_invalid_existing_manifest_without_a_traceback(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

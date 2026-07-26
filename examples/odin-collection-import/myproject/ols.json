@@ -1,0 +1,25 @@
+{
+  "$schema": "https://raw.githubusercontent.com/DanielGavin/ols/master/misc/ols.schema.json",
+  "collections": [
+    { "name": "third_party", "path": "third_party" }
+  ],
+  "enable_format": true,
+  "enable_hover": true,
+  "enable_snippets": true,
+  "enable_document_symbols": true,
+  "enable_references": true,
+  "enable_document_highlights": true,
+  "enable_auto_import": true,
+  "enable_checker_only_saved": true,
+  "checker_args": "-strict-style -vet -vet-tabs -disallow-do",
+  "profile": "default",
+  "profiles": [
+    {
+      "name": "default",
+      "checker_path": ["src", "tests"],
+      "defines": {
+        "ODIN_DEBUG": "false"
+      }
+    }
+  ]
+}

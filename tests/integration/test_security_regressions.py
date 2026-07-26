@@ -14,7 +14,6 @@ from pathlib import Path
 
 from tests.unit.support import load_odindeps
 
-
 SCRIPT = Path(__file__).resolve().parents[2] / "odindeps"
 odindeps = load_odindeps()
 
@@ -127,7 +126,7 @@ class SecurityRegressionTests(unittest.TestCase):
             result = run_sync(project, environment)
 
             self.assertEqual(manifest.read_bytes(), original)
-            self.assertFalse((project / "src" / "third_party" / "library").exists())
+            self.assertFalse((project / "third_party" / "library").exists())
         self.assertNotEqual(result.returncode, 0)
         self.assertTrue(result.stderr.startswith("odindeps:"), result.stderr)
 
@@ -156,7 +155,7 @@ class SecurityRegressionTests(unittest.TestCase):
             result = run_sync(project)
 
             self.assertEqual(outside.read_text(encoding="utf-8"), "keep\n")
-            self.assertFalse((project / "src" / "third_party" / "library").exists())
+            self.assertFalse((project / "third_party" / "library").exists())
         self.assertNotEqual(result.returncode, 0)
         self.assertTrue(result.stderr.startswith("odindeps:"), result.stderr)
 
@@ -212,7 +211,7 @@ class SecurityRegressionTests(unittest.TestCase):
                 json.dumps(clone_manifest()),
                 encoding="utf-8",
             )
-            destination = project / "src" / "third_party" / "library"
+            destination = project / "third_party" / "library"
             first = run_sync(project, environment)
             original_source = destination.joinpath("library.odin").read_bytes()
             original_metadata = destination.joinpath(".odindeps-meta.json").read_bytes()
@@ -259,7 +258,7 @@ class SecurityRegressionTests(unittest.TestCase):
 
             result = run_sync(project, environment)
 
-            self.assertFalse((project / "src" / "third_party" / "a_local").exists())
+            self.assertFalse((project / "third_party" / "a_local").exists())
         self.assertEqual(result.returncode, 4, result.stderr)
 
     def test_mixed_manifest_preflights_a_later_submodule_before_local_mutation(self) -> None:
@@ -292,7 +291,7 @@ class SecurityRegressionTests(unittest.TestCase):
 
             result = run_sync(project, git_environment(config))
 
-            self.assertFalse((project / "src" / "third_party" / "a_local").exists())
+            self.assertFalse((project / "third_party" / "a_local").exists())
         self.assertEqual(result.returncode, 4, result.stderr)
 
     @unittest.skipIf(sys.platform.startswith("win"), "native Windows does not support cache symlinks")
@@ -324,7 +323,7 @@ class SecurityRegressionTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            destination = project / "src" / "third_party" / "library"
+            destination = project / "third_party" / "library"
 
             result = run_sync(project, environment)
 
@@ -352,20 +351,12 @@ class SecurityRegressionTests(unittest.TestCase):
             project.mkdir()
             manifest = project / "odindeps.json"
             manifest.write_text(
-                json.dumps(
-                    clone_manifest(
-                        options={"git": {"clone": {"includes": ["a.odin"]}}}
-                    )
-                ),
+                json.dumps(clone_manifest(options={"git": {"clone": {"includes": ["a.odin"]}}})),
                 encoding="utf-8",
             )
             first = run_sync(project, environment)
             manifest.write_text(
-                json.dumps(
-                    clone_manifest(
-                        options={"git": {"clone": {"includes": ["b.odin"]}}}
-                    )
-                ),
+                json.dumps(clone_manifest(options={"git": {"clone": {"includes": ["b.odin"]}}})),
                 encoding="utf-8",
             )
 
@@ -410,7 +401,7 @@ class SecurityRegressionTests(unittest.TestCase):
             )
 
             result = run_sync(project, git_environment(config))
-            destination = project / "src" / "third_party" / "library"
+            destination = project / "third_party" / "library"
 
             self.assertTrue(destination.joinpath("library.odin").is_file())
             self.assertFalse(destination.joinpath("library_test.odin").exists())
@@ -433,17 +424,13 @@ class SecurityRegressionTests(unittest.TestCase):
             project = root / "project"
             project.mkdir()
             project.joinpath("odindeps.json").write_text(
-                json.dumps(
-                    clone_manifest(
-                        options={"git": {"clone": {"excludes": ["missing/**"]}}}
-                    )
-                ),
+                json.dumps(clone_manifest(options={"git": {"clone": {"excludes": ["missing/**"]}}})),
                 encoding="utf-8",
             )
 
             result = run_sync(project, git_environment(config))
 
-            self.assertTrue((project / "src" / "third_party" / "library" / "library.odin").is_file())
+            self.assertTrue((project / "third_party" / "library" / "library.odin").is_file())
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_clone_filters_must_leave_at_least_one_file(self) -> None:
@@ -460,17 +447,13 @@ class SecurityRegressionTests(unittest.TestCase):
             project = root / "project"
             project.mkdir()
             project.joinpath("odindeps.json").write_text(
-                json.dumps(
-                    clone_manifest(
-                        options={"git": {"clone": {"excludes": ["**/*.odin"]}}}
-                    )
-                ),
+                json.dumps(clone_manifest(options={"git": {"clone": {"excludes": ["**/*.odin"]}}})),
                 encoding="utf-8",
             )
 
             result = run_sync(project, git_environment(config))
 
-            self.assertFalse((project / "src" / "third_party" / "library").exists())
+            self.assertFalse((project / "third_party" / "library").exists())
         self.assertEqual(result.returncode, 2, result.stderr)
 
     @unittest.skipIf(sys.platform.startswith("win"), "source symlink fixture is POSIX-specific")
@@ -510,7 +493,7 @@ class SecurityRegressionTests(unittest.TestCase):
 
             result = run_sync(project, git_environment(config))
 
-            self.assertFalse((project / "src" / "third_party" / "library").exists())
+            self.assertFalse((project / "third_party" / "library").exists())
         self.assertEqual(result.returncode, 5, result.stderr)
 
     def test_clone_resolves_a_non_default_remote_branch(self) -> None:
@@ -539,9 +522,7 @@ class SecurityRegressionTests(unittest.TestCase):
 
             result = run_sync(project, environment)
 
-            self.assertTrue(
-                (project / "src" / "third_party" / "library" / "feature.odin").is_file()
-            )
+            self.assertTrue((project / "third_party" / "library" / "feature.odin").is_file())
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_local_source_path_expands_native_environment_variables(self) -> None:
@@ -567,9 +548,7 @@ class SecurityRegressionTests(unittest.TestCase):
 
             result = run_sync(project, environment)
 
-            self.assertTrue(
-                (project / "src" / "third_party" / "library" / "library.odin").is_file()
-            )
+            self.assertTrue((project / "third_party" / "library" / "library.odin").is_file())
         self.assertEqual(result.returncode, 0, result.stderr)
 
     @unittest.skipIf(sys.platform.startswith("win"), "native Windows does not support cache symlinks")
@@ -628,11 +607,7 @@ class SecurityRegressionTests(unittest.TestCase):
             project = root / "project"
             project.mkdir()
             project.joinpath("odindeps.json").write_text(
-                json.dumps(
-                    clone_manifest(
-                        options={"cache": {"mode": "symlink", "directory": str(cache)}}
-                    )
-                ),
+                json.dumps(clone_manifest(options={"cache": {"mode": "symlink", "directory": str(cache)}})),
                 encoding="utf-8",
             )
 
@@ -674,11 +649,7 @@ class SecurityRegressionTests(unittest.TestCase):
             project = root / "project"
             project.mkdir()
             project.joinpath("odindeps.json").write_text(
-                json.dumps(
-                    clone_manifest(
-                        options={"cache": {"mode": "symlink", "directory": str(cache)}}
-                    )
-                ),
+                json.dumps(clone_manifest(options={"cache": {"mode": "symlink", "directory": str(cache)}})),
                 encoding="utf-8",
             )
 

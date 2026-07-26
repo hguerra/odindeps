@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import subprocess
 import sys
 import tempfile
@@ -10,7 +9,6 @@ import unittest
 from pathlib import Path
 
 from tests.unit.support import load_odindeps
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = PROJECT_ROOT / "odindeps"

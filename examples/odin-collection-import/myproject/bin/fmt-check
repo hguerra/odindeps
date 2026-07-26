@@ -1,0 +1,39 @@
+#!/usr/bin/env sh
+set -eu
+
+cd "$(dirname "$0")/.."
+
+temporary_directory="$(mktemp -d "${TMPDIR:-/tmp}/odin-collection-import-fmt.XXXXXX")"
+cleanup() {
+	rm -rf "$temporary_directory"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+formatter="${ODINFMT:-.bin/odinfmt}"
+if [ ! -x "$formatter" ]; then
+	echo "fmt-check: missing odinfmt; run 'mise run install' or set ODINFMT" >&2
+	exit 1
+fi
+find src tests -type f -name '*.odin' -exec sh -c '
+	temporary_directory=$1
+	config=$2
+	formatter=$3
+	shift 3
+	status=0
+	for file do
+		copy="$temporary_directory/source.odin"
+		cp "$file" "$copy"
+		if ! "$formatter" "$copy" -config:"$config" -w >/dev/null; then
+			echo "fmt-check: formatter failed for $file" >&2
+			status=1
+			continue
+		fi
+		if ! cmp -s "$file" "$copy"; then
+			echo "fmt-check: Odin source is not formatted: $file" >&2
+			status=1
+		fi
+	done
+	exit "$status"
+' sh "$temporary_directory" "$(pwd)/odinfmt.json" "$formatter" {} +

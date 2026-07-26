@@ -1,0 +1,20 @@
+#!/usr/bin/env sh
+set -eu
+
+cd "$(dirname "$0")/.."
+
+cleanup() {
+	:
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+if [ ! -d third_party/slog ]; then
+	echo "verify: missing third_party/slog; run 'mise run sync' first" >&2
+	exit 1
+fi
+
+./bin/fmt-check
+./bin/check
+./bin/smoke

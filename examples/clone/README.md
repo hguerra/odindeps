@@ -31,12 +31,12 @@ Create `odindeps.json`:
 odindeps sync
 ```
 
-The dependency is available at `src/third_party/slog`. Confirm that the
+The dependency is available at `third_party/slog`. Confirm that the
 snapshot contains metadata but no Git repository:
 
 ```sh
-test -f src/third_party/slog/.odindeps-meta.json
-test ! -e src/third_party/slog/.git
+test -f third_party/slog/.odindeps-meta.json
+test ! -e third_party/slog/.git
 ```
 
 Running `odindeps sync` again is a no-op while the managed metadata matches.
@@ -57,5 +57,5 @@ odindeps sync --force
 Remove the materialized snapshot and, if desired, the example project:
 
 ```sh
-rm -rf src/third_party/slog
+rm -rf third_party/slog
 ```
