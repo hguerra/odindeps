@@ -138,6 +138,16 @@ class AutomationTests(unittest.TestCase):
         self.assertNotIn("secrets.", workflow)
         self.assertIn("mise run check", workflow)
 
+    def test_mise_unittest_discovery_patterns_are_portable_to_windows(self) -> None:
+        config = read(ROOT / "mise.toml")
+        discovery_commands = [line for line in config.splitlines() if "python -m unittest discover" in line]
+
+        self.assertEqual(len(discovery_commands), 3)
+        for command in discovery_commands:
+            with self.subTest(command=command):
+                self.assertIn("-p test_*.py", command)
+                self.assertNotIn("'test_*.py'", command)
+
     def test_all_uv_invocations_use_the_locked_project_environment(self) -> None:
         sources = [read(ROOT / "mise.toml"), *(read(path) for path in WORKFLOW_PATHS)]
         invocations = [
@@ -163,7 +173,9 @@ class AutomationTests(unittest.TestCase):
         examples = job_body(workflow, "odin-examples")
         scripts = "\n".join(run_scripts("  odin-examples:\n" + examples))
 
-        self.assertIn("ubuntu-latest, macos-latest, windows-latest", examples)
+        self.assertIn("ubuntu-latest, macos-latest", examples)
+        self.assertNotIn("windows-latest", examples)
+        self.assertNotIn("shell: pwsh", examples)
         self.assertIn("examples/odin-collection-import/myproject", examples)
         self.assertIn("examples/odin-relative-import/myproject", examples)
         for command in (

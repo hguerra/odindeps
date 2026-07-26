@@ -12,8 +12,8 @@
   project's chosen strategy, then run `odindeps sync`.
 - Adopt the pre-release manifest vocabulary `dependencies`, `defaults`,
   `git`, `path`, and `destination_root`, and publish `odindeps.schema.json`.
-- Document checksum-verified installation, removal, and step-by-step workflows
-  for every supported materialization strategy.
+- Provide a three-command installation path in the README and move platform,
+  upgrade, source-checkout, and removal details into `docs/installation.md`.
 - Use `hguerra/odin-slog` as the canonical public Git dependency example.
 - Replace the pre-release clone `files` filter with composable `includes` and
   `excludes` filters.
@@ -27,3 +27,5 @@
 - Add locked Ruff linting and formatting to the Python development checks.
 - Provide checksum-verified GitHub release assets and a native-Windows command
   wrapper.
+- Keep Python CI portable on Windows and run the POSIX Odin harness on macOS
+  and Linux, its supported platforms.
