@@ -446,6 +446,33 @@ class SecurityRegressionTests(unittest.TestCase):
             self.assertTrue((project / "src" / "third_party" / "library" / "library.odin").is_file())
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_clone_filters_must_leave_at_least_one_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source = initialize_source(root)
+            source.joinpath("library.odin").write_text("package library\n", encoding="utf-8")
+            git(source, "add", ".")
+            git(source, "commit", "-m", "fixture")
+            git(source, "tag", "v1")
+            bare = create_bare_remote(root, source)
+            config = root / "gitconfig"
+            write_git_config(config, bare)
+            project = root / "project"
+            project.mkdir()
+            project.joinpath("odindeps.json").write_text(
+                json.dumps(
+                    clone_manifest(
+                        options={"git": {"clone": {"excludes": ["**/*.odin"]}}}
+                    )
+                ),
+                encoding="utf-8",
+            )
+
+            result = run_sync(project, git_environment(config))
+
+            self.assertFalse((project / "src" / "third_party" / "library").exists())
+        self.assertEqual(result.returncode, 2, result.stderr)
+
     def test_clone_resolves_a_non_default_remote_branch(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
