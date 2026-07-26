@@ -3,7 +3,14 @@
   "dependencies": {
     "slog": {
       "git": "github.com/hguerra/odin-slog",
-      "rev": "v0.0.1"
+      "rev": "v0.0.1",
+      "options": {
+        "git": {
+          "clone": {
+            "files": ["**/*.odin"]
+          }
+        }
+      }
     }
   }
 }
