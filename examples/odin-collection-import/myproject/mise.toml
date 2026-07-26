@@ -7,8 +7,11 @@ run = "./bin/install"
 [tasks.sync]
 run = "./bin/sync"
 
-[tasks.run]
-run = "./bin/run"
+[tasks.dev]
+run = "./bin/dev"
+
+[tasks.build]
+run = "./bin/build"
 
 [tasks.fmt]
 run = "./bin/fmt"

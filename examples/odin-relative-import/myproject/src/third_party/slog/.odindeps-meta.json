@@ -1,0 +1,20 @@
+{
+  "commit": "ad1f668a6048cdd5975be7fe2f94718dda57580f",
+  "dependency_kind": "git",
+  "git": "github.com/hguerra/odin-slog",
+  "name": "slog",
+  "options": {
+    "cache_mode": "off",
+    "excludes": [
+      "**/*_test.odin",
+      "examples/**",
+      "tests/**"
+    ],
+    "includes": [
+      "**/*.odin",
+      "LICENSE"
+    ]
+  },
+  "rev": "v0.0.1",
+  "schema_version": 1
+}

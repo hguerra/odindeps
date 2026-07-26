@@ -70,6 +70,103 @@ The resulting manifest is:
 By default, dependencies are materialized at `third_party/<name>`, so this
 dependency is available at `third_party/slog`.
 
+### Example [odindeps/examples/odin-collection-import](./examples/odin-collection-import/):
+
+1. Open [odindeps/examples/odin-collection-import/myproject](./examples/odin-collection-import/myproject/)
+```bash
+cd myproject
+
+# download odinfmt
+mise run install
+```
+
+```bash
+❯ tree -C .
+.
+├── bin
+│   ├── build
+│   ├── check
+│   ├── dev
+│   ├── fmt
+│   ├── fmt-check
+│   ├── install
+│   ├── smoke
+│   ├── sync
+│   ├── test-integration
+│   ├── test-unit
+│   └── verify
+├── mise.toml
+├── odindeps.json
+├── odinfmt.json
+├── ols.json
+├── src
+│   ├── main.odin
+│   └── myproject
+│       ├── application.odin
+│       └── pricing.odin
+└── tests
+    ├── integration
+    │   └── application_test.odin
+    ├── tests.odin
+    └── unit
+        └── pricing_test.odin
+
+7 directories, 21 files
+```
+
+2. Clone dependecies
+```bash
+mise run sync
+mise run verify
+mise run dev
+mise run build
+```
+
+```bash
+❯ tree -C .
+.
+├── bin
+│   ├── build
+│   ├── check
+│   ├── dev
+│   ├── fmt
+│   ├── fmt-check
+│   ├── install
+│   ├── smoke
+│   ├── sync
+│   ├── test-integration
+│   ├── test-unit
+│   └── verify
+├── mise.toml
+├── odindeps.json
+├── odinfmt.json
+├── ols.json
+├── src
+│   ├── main.odin
+│   └── myproject
+│       ├── application.odin
+│       └── pricing.odin
+├── tests
+│   ├── integration
+│   │   └── application_test.odin
+│   ├── tests.odin
+│   └── unit
+│       └── pricing_test.odin
+└── third_party
+    └── slog
+        ├── LICENSE
+        ├── adapter.odin
+        ├── aws.odin
+        ├── gcp.odin
+        ├── handler.odin
+        ├── json.odin
+        ├── logger.odin
+        ├── slog.odin
+        └── text.odin
+
+9 directories, 30 files
+```
+
 ## Commands
 
 | Command | Purpose |

@@ -13,7 +13,8 @@ cd myproject
 mise run install
 mise run sync
 mise run verify
-mise run run
+mise run dev
+mise run build
 ```
 
 The final command emits one JSON object with the message
