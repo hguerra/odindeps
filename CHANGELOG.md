@@ -29,3 +29,5 @@
   wrapper.
 - Keep Python CI portable on Windows and run the POSIX Odin harness on macOS
   and Linux, its supported platforms.
+- Support native-Windows local path name inference, normalized containment
+  checks, read-only Git metadata cleanup, and portable offline Git fixtures.

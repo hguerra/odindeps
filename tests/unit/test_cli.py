@@ -54,6 +54,7 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("--source", result.stdout)
         self.assertNotIn("--local", result.stdout)
 
+    @unittest.skipIf(sys.platform.startswith("win"), "Windows does not expose POSIX executable mode bits")
     def test_executable_has_the_portable_shebang_and_user_execute_permission(self) -> None:
         self.assertEqual(SCRIPT.read_text(encoding="utf-8").splitlines()[0], "#!/usr/bin/env python3")
         self.assertTrue(SCRIPT.stat().st_mode & stat.S_IXUSR)

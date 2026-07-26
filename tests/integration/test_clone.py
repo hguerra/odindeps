@@ -47,7 +47,8 @@ class CloneTests(unittest.TestCase):
             )
             config = root / "gitconfig"
             config.write_text(
-                f'[url "file://{bare}"]\n\tinsteadOf = https://example.test/team/library.git\n', encoding="utf-8"
+                f'[url "{bare.as_uri()}"]\n\tinsteadOf = https://example.test/team/library.git\n',
+                encoding="utf-8",
             )
             environment = {**os.environ, "GIT_CONFIG_GLOBAL": str(config), "GIT_TERMINAL_PROMPT": "0"}
 
@@ -87,7 +88,8 @@ class CloneTests(unittest.TestCase):
             cache = root / "cache"
             config = root / "gitconfig"
             config.write_text(
-                f'[url "file://{bare}"]\n\tinsteadOf = https://example.test/team/library.git\n', encoding="utf-8"
+                f'[url "{bare.as_uri()}"]\n\tinsteadOf = https://example.test/team/library.git\n',
+                encoding="utf-8",
             )
             environment = {**os.environ, "GIT_CONFIG_GLOBAL": str(config), "GIT_TERMINAL_PROMPT": "0"}
             manifest = {

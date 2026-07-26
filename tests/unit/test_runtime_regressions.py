@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import stat
 import subprocess
 import sys
 import tempfile
@@ -16,6 +17,26 @@ odindeps = load_odindeps()
 
 
 class RuntimeValidationRegressionTests(unittest.TestCase):
+    def test_dependency_name_inference_accepts_posix_and_windows_paths(self) -> None:
+        self.assertEqual(odindeps._infer_dependency_name("/work/shared"), "shared")
+        self.assertEqual(odindeps._infer_dependency_name(r"C:\work\shared"), "shared")
+
+    def test_remove_tree_handles_read_only_git_content(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            tree = Path(temporary_directory) / "checkout"
+            tree.mkdir()
+            read_only = tree / "object"
+            read_only.write_bytes(b"git object")
+            read_only.chmod(read_only.stat().st_mode & ~stat.S_IWUSR)
+
+            try:
+                odindeps._remove_tree(tree)
+            finally:
+                if read_only.exists():
+                    read_only.chmod(read_only.stat().st_mode | stat.S_IWUSR)
+
+            self.assertFalse(tree.exists())
+
     def test_clone_file_patterns_must_be_project_relative_posix_globs(self) -> None:
         invalid_patterns = (
             "../*.odin",

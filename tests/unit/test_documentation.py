@@ -50,7 +50,7 @@ class DocumentationTests(unittest.TestCase):
             self.assertEqual(example["schema_version"], 1)
             self.assertIn("dependencies", example)
             self.assertNotIn("deps", example)
-            odindeps.parse_manifest(example)
+            odindeps.parse_manifest(example, platform="linux")
 
     def test_readme_links_both_odin_import_examples(self) -> None:
         readme = ROOT.joinpath("README.md").read_text(encoding="utf-8")

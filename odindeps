@@ -10,6 +10,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -359,7 +360,20 @@ def _replace_owned_destination(destination: Path, staged: Path) -> None:
     if backup.is_symlink() or backup.is_file():
         backup.unlink()
     else:
-        shutil.rmtree(backup)
+        _remove_tree(backup)
+
+
+def _remove_tree(path: Path) -> None:
+    """Remove a tree, retrying read-only Git content on Windows."""
+
+    def make_writable_and_retry(function, value, error) -> None:
+        if not isinstance(error[1], PermissionError):
+            raise error[1]
+        item = Path(value)
+        item.chmod(item.stat().st_mode | stat.S_IWUSR)
+        function(value)
+
+    shutil.rmtree(path, onerror=make_writable_and_retry)
 
 
 def _copy_local_dependency(source: Path, destination: Path, metadata: Mapping[str, object]) -> None:
@@ -514,7 +528,7 @@ def _filter_clone_snapshot(
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(path, target, follow_symlinks=False)
     _validate_snapshot_tree(filtered)
-    shutil.rmtree(staged)
+    _remove_tree(staged)
     filtered.rename(staged)
     return staged
 
@@ -551,7 +565,7 @@ def _clone_dependency(dependency: Dependency, options: Mapping[str, object], des
         resolved = _resolve_git_revision(staged, dependency.rev or "")
         _safe_checkout(staged, resolved)
         metadata["commit"] = resolved
-        shutil.rmtree(staged / ".git")
+        _remove_tree(staged / ".git")
         _validate_snapshot_tree(staged)
         if includes or excludes:
             staged = _filter_clone_snapshot(
@@ -724,7 +738,7 @@ def add_dependency(
         raise ValidationError("--rev is required with --git")
     if path_value is not None and rev is not None:
         raise ValidationError("--rev is only valid with --git")
-    inferred = (git or path_value or "").rstrip("/").removesuffix(".git").split("/")[-1]
+    inferred = _infer_dependency_name(git or path_value or "")
     dependency_name = name or inferred
     if not DEPENDENCY_NAME.fullmatch(dependency_name):
         raise ValidationError("--name is invalid")
@@ -766,6 +780,12 @@ def add_dependency(
     _write_manifest(directory, candidate)
 
 
+def _infer_dependency_name(location: str) -> str:
+    """Infer a portable dependency name from a Git locator or filesystem path."""
+    normalized = location.rstrip("/\\").removesuffix(".git")
+    return re.split(r"[/\\]", normalized)[-1]
+
+
 def synchronize_manifest(
     directory: Path,
     *,
@@ -802,9 +822,14 @@ def synchronize_manifest(
         if not source.is_absolute():
             source = directory / source
         source = source.resolve()
+        resolved_destination = destination.resolve()
         if not source.is_dir():
             raise FilesystemError(f"dependency {dependency.name!r} local source is not a directory")
-        if source == destination or source in destination.parents or destination in source.parents:
+        if (
+            source == resolved_destination
+            or source in resolved_destination.parents
+            or resolved_destination in source.parents
+        ):
             raise ConflictError(f"dependency {dependency.name!r} source and destination must not contain one another")
         _validate_snapshot_tree(source)
     # Verify every selected Git remote and revision before publication.
@@ -859,9 +884,14 @@ def synchronize_manifest(
         if not source.is_absolute():
             source = directory / source
         source = source.resolve()
+        resolved_destination = destination.resolve()
         if not source.is_dir():
             raise FilesystemError(f"dependency {dependency.name!r} local source is not a directory")
-        if source == destination or source in destination.parents or destination in source.parents:
+        if (
+            source == resolved_destination
+            or source in resolved_destination.parents
+            or resolved_destination in source.parents
+        ):
             raise ConflictError(f"dependency {dependency.name!r} source and destination must not contain one another")
         if options["local"]["strategy"] == "symlink":
             target = Path(os.path.relpath(source, destination.parent))

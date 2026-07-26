@@ -14,9 +14,9 @@ jobs:
       matrix: {os: [ubuntu-latest, macos-latest, windows-latest]}
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
-      - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2
+      - uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14 # v4.2.3
       - run: mise run check
       - shell: bash
         run: test -x odindeps && test "$(head -n 1 odindeps)" = '#!/usr/bin/env python3' && cp odindeps /tmp/odindeps && /tmp/odindeps --help
@@ -29,15 +29,24 @@ jobs:
           .\odindeps.cmd --help
           Pop-Location
         if: runner.os == 'Windows'
+      - name: Materialize the filtered clone on Windows
+        working-directory: examples/odin-collection-import/myproject
+        shell: pwsh
+        run: |
+          python ../../../odindeps sync
+          if (!(Test-Path third_party/slog/LICENSE -PathType Leaf)) { exit 1 }
+          if (!(Test-Path third_party/slog/slog.odin -PathType Leaf)) { exit 1 }
+          if (Test-Path third_party/slog/.git) { exit 1 }
+        if: runner.os == 'Windows'
   odin-examples:
     strategy:
       fail-fast: false
       matrix: {os: [ubuntu-latest, macos-latest]}
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
-      - uses: jdx/mise-action@c37c93293d6b742fc901e1406b8f764f6fb19dac # v2
+      - uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14 # v4.2.3
       - working-directory: examples/odin-collection-import/myproject
         run: mise install
       - working-directory: examples/odin-collection-import/myproject

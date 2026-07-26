@@ -60,7 +60,7 @@ def configure_environment(root: Path, bare: Path) -> dict[str, str]:
     config.write_text(
         "\n".join(
             (
-                f'[url "file://{bare}"]',
+                f'[url "{bare.as_uri()}"]',
                 "\tinsteadOf = https://example.test/team/library.git",
                 '[protocol "file"]',
                 "\tallow = always",

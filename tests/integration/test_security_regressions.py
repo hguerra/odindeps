@@ -51,7 +51,7 @@ def create_bare_remote(root: Path, source: Path) -> Path:
 
 def write_git_config(path: Path, bare: Path, *, hooks_path: str | None = None) -> None:
     sections = [
-        f'[url "file://{bare}"]',
+        f'[url "{bare.as_uri()}"]',
         "\tinsteadOf = https://example.test/team/library.git",
         '[protocol "file"]',
         "\tallow = always",

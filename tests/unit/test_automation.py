@@ -17,12 +17,12 @@ WORKFLOW_PATHS = (
 # review. A syntactically valid but unknown SHA must not pass this test.
 REVIEWED_ACTION_PINS = {
     "actions/checkout": (
-        "11bd71901bbe5b1630ceea73d27597364c9af683",
-        "v4.2.2",
+        "3d3c42e5aac5ba805825da76410c181273ba90b1",
+        "v7.0.1",
     ),
     "jdx/mise-action": (
-        "c37c93293d6b742fc901e1406b8f764f6fb19dac",
-        "v2",
+        "9e7f7633ff6f6d6048a9418a68d48f288f50eb14",
+        "v4.2.3",
     ),
 }
 EXPECTED_RELEASE_ASSETS = ("odindeps", "odindeps.cmd", "odindeps.sha256")
@@ -167,6 +167,16 @@ class AutomationTests(unittest.TestCase):
         self.assertRegex(scripts, r"(?m)(?:^|&&\s*)/tmp/odindeps --help(?:\s*&&|$)")
         self.assertNotRegex(scripts, r"\bpython3?\s+/tmp/odindeps\b")
         self.assertIn("odindeps.cmd --help", scripts)
+
+    def test_ci_materializes_a_filtered_clone_on_windows_without_the_odin_toolchain(self) -> None:
+        workflow = read(ROOT / ".github/workflows/ci.yml")
+        check = job_body(workflow, "check")
+
+        self.assertIn("Materialize the filtered clone on Windows", check)
+        self.assertIn("examples/odin-collection-import/myproject", check)
+        self.assertIn("python ../../../odindeps sync", check)
+        self.assertIn("third_party/slog/LICENSE", check)
+        self.assertIn("if: runner.os == 'Windows'", check)
 
     def test_ci_runs_both_odin_examples_end_to_end(self) -> None:
         workflow = read(ROOT / ".github/workflows/ci.yml")
