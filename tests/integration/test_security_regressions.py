@@ -12,8 +12,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests.unit.support import load_odindeps
+
 
 SCRIPT = Path(__file__).resolve().parents[2] / "odindeps"
+odindeps = load_odindeps()
 
 
 def git(directory: Path, *arguments: str) -> str:
@@ -259,6 +262,39 @@ class SecurityRegressionTests(unittest.TestCase):
             self.assertFalse((project / "src" / "third_party" / "a_local").exists())
         self.assertEqual(result.returncode, 4, result.stderr)
 
+    def test_mixed_manifest_preflights_a_later_submodule_before_local_mutation(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            local_source = root / "local-source"
+            local_source.mkdir()
+            local_source.joinpath("local.odin").write_text("package local\n", encoding="utf-8")
+            missing_remote = root / "missing.git"
+            config = root / "gitconfig"
+            write_git_config(config, missing_remote)
+            project = root / "project"
+            project.mkdir()
+            project.joinpath("odindeps.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "dependencies": {
+                            "a_local": {"path": str(local_source)},
+                            "z_submodule": {
+                                "git": "example.test/team/library",
+                                "rev": "v1",
+                                "options": {"git": {"strategy": "submodule"}},
+                            },
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = run_sync(project, git_environment(config))
+
+            self.assertFalse((project / "src" / "third_party" / "a_local").exists())
+        self.assertEqual(result.returncode, 4, result.stderr)
+
     @unittest.skipIf(sys.platform.startswith("win"), "native Windows does not support cache symlinks")
     def test_cache_entry_cannot_be_mutated_through_the_project_symlink(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -434,6 +470,82 @@ class SecurityRegressionTests(unittest.TestCase):
             if cache.is_dir():
                 self.assertEqual(len(list(cache.iterdir())), 1)
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    @unittest.skipIf(sys.platform.startswith("win"), "native Windows does not support cache symlinks")
+    def test_group_or_world_writable_cache_directory_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source = initialize_source(root)
+            source.joinpath("library.odin").write_text("package library\n", encoding="utf-8")
+            git(source, "add", ".")
+            git(source, "commit", "-m", "fixture")
+            git(source, "tag", "v1")
+            bare = create_bare_remote(root, source)
+            config = root / "gitconfig"
+            write_git_config(config, bare)
+            cache = root / "shared-cache"
+            cache.mkdir(mode=0o777)
+            cache.chmod(0o777)
+            project = root / "project"
+            project.mkdir()
+            project.joinpath("odindeps.json").write_text(
+                json.dumps(
+                    clone_manifest(
+                        options={"cache": {"mode": "symlink", "directory": str(cache)}}
+                    )
+                ),
+                encoding="utf-8",
+            )
+
+            result = run_sync(project, git_environment(config))
+
+        self.assertEqual(result.returncode, 3, result.stderr)
+
+    @unittest.skipIf(sys.platform.startswith("win"), "native Windows does not support cache symlinks")
+    def test_preexisting_cache_content_must_match_the_verified_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            source = initialize_source(root)
+            source.joinpath("library.odin").write_text("package library\n", encoding="utf-8")
+            git(source, "add", ".")
+            git(source, "commit", "-m", "fixture")
+            commit = git(source, "rev-parse", "HEAD")
+            git(source, "tag", "v1")
+            bare = create_bare_remote(root, source)
+            config = root / "gitconfig"
+            write_git_config(config, bare)
+            cache = root / "cache"
+            entry = cache / odindeps.cache_key("example.test/team/library", commit, ())
+            entry.mkdir(parents=True)
+            entry.joinpath("library.odin").write_text("package forged\n", encoding="utf-8")
+            entry.joinpath(".odindeps-meta.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "name": "library",
+                        "dependency_kind": "git",
+                        "git": "example.test/team/library",
+                        "rev": "v1",
+                        "commit": commit,
+                        "options": {"files": [], "cache_mode": "symlink"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            project = root / "project"
+            project.mkdir()
+            project.joinpath("odindeps.json").write_text(
+                json.dumps(
+                    clone_manifest(
+                        options={"cache": {"mode": "symlink", "directory": str(cache)}}
+                    )
+                ),
+                encoding="utf-8",
+            )
+
+            result = run_sync(project, git_environment(config))
+
+        self.assertEqual(result.returncode, 3, result.stderr)
 
 
 if __name__ == "__main__":

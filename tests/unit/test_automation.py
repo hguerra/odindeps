@@ -300,6 +300,14 @@ class AutomationTests(unittest.TestCase):
         self.assertRegex(scripts, r"(?m)(?:^|&&\s*)/tmp/odindeps --help(?:\s*&&|$)")
         self.assertNotRegex(scripts, r"\bpython3?\s+/tmp/odindeps\b")
 
+    def test_release_fetches_tags_in_publish_and_uses_python_on_windows(self) -> None:
+        release = read(ROOT / ".github/workflows/release.yml")
+        publish = job_body(release, "publish")
+
+        self.assertIn("fetch-depth: 0", publish)
+        self.assertIn("python ./odindeps --version", release)
+        self.assertNotIn("& ./odindeps --version", release)
+
     def test_contributing_documents_the_reviewed_version_contract(self) -> None:
         contributing = read(ROOT / "CONTRIBUTING.md")
 

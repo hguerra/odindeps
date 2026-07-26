@@ -153,6 +153,11 @@ odindeps add \
 project whose manifest already exists, materialize all declared dependencies
 with `odindeps sync`.
 
+Before publishing snapshots, `sync` validates every local source and probes
+every declared Git remote and revision. Git submodule and subtree strategies
+also modify the consuming repository; keep it clean and review their staged or
+committed changes as part of the normal Git workflow.
+
 The resulting manifest is:
 
 ```json

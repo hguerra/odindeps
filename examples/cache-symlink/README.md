@@ -1,6 +1,6 @@
 # Cached clone symlink
 
-Cache mode stores an immutable clone snapshot in a shared machine-local cache
+Cache mode stores an immutable clone snapshot in a private machine-local cache
 and creates a permanent project symlink to it. It is available on macOS and
 Linux only.
 
@@ -46,8 +46,11 @@ readlink src/third_party/slog
 ```
 
 The cache key includes the normalized Git locator, resolved commit, and clone
-file filters. Identical inputs reuse the same entry. Cache hashes address
-content but do not provide dependency-integrity guarantees.
+file filters. Identical inputs reuse the same entry only after its content is
+checked against the newly verified snapshot. The cache directory must not be a
+symbolic link or group/world-writable; use a private directory such as the
+default `~/.cache/odindeps`. Cache hashes do not provide dependency-integrity
+guarantees.
 
 ## 3. Update
 

@@ -73,6 +73,12 @@ class RuntimeValidationRegressionTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertTrue(result.stderr.startswith("odindeps:"), result.stderr)
 
+    def test_glob_matching_with_many_recursive_segments_is_linear_in_its_state_space(self) -> None:
+        path = "/".join(["source"] * 24)
+        pattern = "/".join(["**"] * 24 + ["missing.odin"])
+
+        self.assertFalse(odindeps._path_matches_pattern(path, pattern))
+
 
 if __name__ == "__main__":
     unittest.main()

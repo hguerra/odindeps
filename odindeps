@@ -8,6 +8,7 @@ import fnmatch
 import hashlib
 from collections.abc import Sequence
 from dataclasses import dataclass
+from functools import lru_cache
 import json
 import os
 from pathlib import Path
@@ -313,9 +314,10 @@ def _reserved_metadata_path(directory: Path) -> Path:
     return path
 
 
-def _validate_snapshot_tree(root: Path) -> None:
+def _validate_snapshot_tree(root: Path, *, allow_metadata: bool = False) -> None:
     """Reject reserved metadata and links that can escape a materialized snapshot."""
-    _reserved_metadata_path(root)
+    if not allow_metadata:
+        _reserved_metadata_path(root)
     resolved_root = root.resolve()
     for path in root.rglob("*"):
         if not path.is_symlink():
@@ -416,6 +418,7 @@ def _path_matches_pattern(path: str, pattern: str) -> bool:
     path_parts = path.split("/")
     pattern_parts = pattern.split("/")
 
+    @lru_cache(maxsize=None)
     def match(path_index: int, pattern_index: int) -> bool:
         if pattern_index == len(pattern_parts):
             return path_index == len(path_parts)
@@ -429,6 +432,34 @@ def _path_matches_pattern(path: str, pattern: str) -> bool:
         )
 
     return match(0, 0)
+
+
+def _snapshot_digest(root: Path) -> str:
+    """Hash every materialized path to verify a cache entry before reuse."""
+    digest = hashlib.sha256()
+    for path in sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()):
+        relative = path.relative_to(root).as_posix().encode("utf-8")
+        if path.is_symlink():
+            digest.update(b"L\0" + relative + b"\0" + os.readlink(path).encode("utf-8"))
+        elif path.is_dir():
+            digest.update(b"D\0" + relative)
+        elif path.is_file():
+            digest.update(b"F\0" + relative + b"\0")
+            with path.open("rb") as source:
+                for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                    digest.update(chunk)
+        else:
+            raise FilesystemError("dependency content contains an unsupported filesystem entry")
+    return digest.hexdigest()
+
+
+def _validate_cache_root(cache_root: Path) -> None:
+    if cache_root.is_symlink():
+        raise ConflictError("cache directory must not be a symbolic link")
+    cache_root.mkdir(parents=True, exist_ok=True)
+    mode = cache_root.stat().st_mode
+    if mode & 0o022:
+        raise ConflictError("cache directory must not be group- or world-writable")
 
 
 def _clone_dependency(dependency: Dependency, options: Mapping[str, object], destination: Path, force: bool) -> None:
@@ -481,7 +512,10 @@ def _clone_dependency(dependency: Dependency, options: Mapping[str, object], des
         if options["cache"]["mode"] == "symlink":
             cache_root = Path(os.path.expandvars(str(options["cache"]["directory"]))).expanduser()
             entry = cache_root / cache_key(dependency.git or "", resolved, files)
-            cache_root.mkdir(parents=True, exist_ok=True)
+            _validate_cache_root(cache_root)
+            staged_digest = _snapshot_digest(staged)
+            if os.path.lexists(entry) and entry.is_symlink():
+                raise ConflictError(f"dependency {dependency.name!r} cache entry is not a directory")
             if not entry.exists():
                 os.replace(staged, entry)
                 for path in entry.rglob("*"):
@@ -491,12 +525,17 @@ def _clone_dependency(dependency: Dependency, options: Mapping[str, object], des
                         path.chmod(path.stat().st_mode & ~0o222)
                 entry.chmod(entry.stat().st_mode & ~0o222)
             else:
+                if not entry.is_dir():
+                    raise ConflictError(f"dependency {dependency.name!r} cache entry is not a directory")
                 try:
                     cached_metadata = json.loads(entry.joinpath(".odindeps-meta.json").read_text(encoding="utf-8"))
                 except (OSError, json.JSONDecodeError):
                     raise ConflictError(f"dependency {dependency.name!r} cache entry is invalid") from None
                 if cached_metadata != metadata:
                     raise ConflictError(f"dependency {dependency.name!r} cache entry does not match its identity")
+                _validate_snapshot_tree(entry, allow_metadata=True)
+                if _snapshot_digest(entry) != staged_digest:
+                    raise ConflictError(f"dependency {dependency.name!r} cache entry content does not match its identity")
             target = Path(os.path.relpath(entry, destination.parent))
             if destination.is_symlink():
                 destination.unlink()
@@ -669,9 +708,9 @@ def synchronize_manifest(
         if source == destination or source in destination.parents or destination in source.parents:
             raise ConflictError(f"dependency {dependency.name!r} source and destination must not contain one another")
         _validate_snapshot_tree(source)
-    # Verify all clone remotes and revisions before any local dependency is published.
+    # Verify every Git remote and revision before any dependency is published.
     for dependency, options, _ in planned:
-        if dependency.git is None or options["git"]["strategy"] != "clone":
+        if dependency.git is None:
             continue
         remote = derive_remote(dependency.git, options["transport"])
         with tempfile.TemporaryDirectory() as probe_directory:
