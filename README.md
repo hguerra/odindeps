@@ -158,6 +158,10 @@ every declared Git remote and revision. Git submodule and subtree strategies
 also modify the consuming repository; keep it clean and review their staged or
 committed changes as part of the normal Git workflow.
 
+`sync` is not a multi-dependency transaction: if a later filesystem or Git
+action fails, prior successful actions remain in place. Resolve those changes
+with the consuming repository's normal Git workflow before retrying.
+
 The resulting manifest is:
 
 ```json
