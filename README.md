@@ -9,141 +9,17 @@ dependencies.
 
 ## Install
 
-GitHub Releases are the recommended installation method. Each release contains
-the standalone Python script, a native-Windows command wrapper, and their
-SHA-256 checksums. Python 3.11 or newer is required; Git is required when a
-manifest contains Git dependencies.
-
-### macOS and Linux
-
-Download a specific release, verify it, and atomically place it under
-`$HOME/.local/bin`:
+Install the latest release on macOS or Linux:
 
 ```sh
-version="v0.1.0"
-install_directory="$HOME/.local/bin"
-mkdir -p "$install_directory"
-staging_directory="$(mktemp -d "$install_directory/.odindeps-install.XXXXXX")"
-staged_executable="$staging_directory/odindeps"
-trap 'rm -rf "$staging_directory"' EXIT INT TERM
-
-base_url="https://github.com/hguerra/odindeps/releases/download/$version"
-curl --fail --location --proto '=https' --tlsv1.2 \
-  --output "$staged_executable" "$base_url/odindeps"
-curl --fail --location --proto '=https' --tlsv1.2 \
-  --output "$staging_directory/odindeps.sha256" "$base_url/odindeps.sha256"
-
-expected_checksum="$(awk '$2 == "odindeps" {print $1}' "$staging_directory/odindeps.sha256")"
-if command -v sha256sum >/dev/null 2>&1; then
-  actual_checksum="$(sha256sum "$staged_executable" | awk '{print $1}')"
-else
-  actual_checksum="$(shasum -a 256 "$staged_executable" | awk '{print $1}')"
-fi
-test "$actual_checksum" = "$expected_checksum"
-
-chmod 0755 "$staged_executable"
-"$staged_executable" --version
-mv "$staged_executable" "$install_directory/odindeps"
-"$install_directory/odindeps" --version
+mkdir -p "$HOME/.local/bin"
+curl -fsSL https://github.com/hguerra/odindeps/releases/latest/download/odindeps -o "$HOME/.local/bin/odindeps"
+chmod +x "$HOME/.local/bin/odindeps"
 ```
 
-Ensure the installation directory is on `PATH`:
-
-```sh
-export PATH="$HOME/.local/bin:$PATH"
-```
-
-Add that export to the appropriate shell startup file if it should persist
-across terminal sessions. To upgrade, repeat the same procedure with a newer
-`version`.
-
-For convenience, GitHub also exposes the moving URLs
-`https://github.com/hguerra/odindeps/releases/latest/download/odindeps` and
-`https://github.com/hguerra/odindeps/releases/latest/download/odindeps.sha256`.
-Use the versioned URLs above for reproducible installation. A checksum obtained
-from the same release detects corruption or mismatched downloads; release
-immutability protects published assets from later replacement.
-
-### Native Windows
-
-Download the script and its `.cmd` wrapper into the installation directory:
-
-```powershell
-$Version = "v0.1.0"
-$InstallDirectory = Join-Path $HOME ".local\bin"
-New-Item -ItemType Directory -Force $InstallDirectory | Out-Null
-$StagingDirectory = Join-Path $InstallDirectory (".odindeps-install-" + [System.Guid]::NewGuid())
-New-Item -ItemType Directory $StagingDirectory | Out-Null
-$BaseUrl = "https://github.com/hguerra/odindeps/releases/download/$Version"
-
-foreach ($Asset in @("odindeps", "odindeps.cmd", "odindeps.sha256")) {
-  Invoke-WebRequest "$BaseUrl/$Asset" -OutFile (Join-Path $StagingDirectory $Asset)
-}
-$PublishedChecksums = @{}
-Get-Content (Join-Path $StagingDirectory "odindeps.sha256") | ForEach-Object {
-  $Hash, $Name = $_ -split "\s+", 2
-  $PublishedChecksums[$Name.TrimStart("*")] = $Hash
-}
-foreach ($Asset in @("odindeps", "odindeps.cmd")) {
-  $ActualChecksum = (Get-FileHash (Join-Path $StagingDirectory $Asset) -Algorithm SHA256).Hash
-  if ($ActualChecksum -ne $PublishedChecksums[$Asset]) {
-    throw "odindeps checksum verification failed for $Asset"
-  }
-}
-
-python (Join-Path $StagingDirectory "odindeps") --version
-Move-Item (Join-Path $StagingDirectory "odindeps") (Join-Path $InstallDirectory "odindeps") -Force
-Move-Item (Join-Path $StagingDirectory "odindeps.cmd") (Join-Path $InstallDirectory "odindeps.cmd") -Force
-Remove-Item $StagingDirectory -Recurse -Force
-& (Join-Path $InstallDirectory "odindeps.cmd") --version
-```
-
-Add `$InstallDirectory` to the user `PATH` to invoke `odindeps` directly from a
-new terminal. Upgrades repeat the procedure with a newer `$Version`.
-
-### Existing source checkout
-
-On macOS or Linux, run this from the repository root:
-
-```sh
-install_directory="$HOME/.local/bin"
-mkdir -p "$install_directory"
-install -m 0755 ./odindeps "$install_directory/odindeps"
-"$install_directory/odindeps" --version
-```
-
-On native Windows:
-
-```powershell
-$InstallDirectory = Join-Path $HOME ".local\bin"
-New-Item -ItemType Directory -Force $InstallDirectory | Out-Null
-Copy-Item .\odindeps (Join-Path $InstallDirectory "odindeps") -Force
-Copy-Item .\odindeps.cmd (Join-Path $InstallDirectory "odindeps.cmd") -Force
-& (Join-Path $InstallDirectory "odindeps.cmd") --version
-```
-
-<details>
-<summary><strong>Remove odindeps</strong></summary>
-
-On macOS or Linux, remove only the installed executable:
-
-```sh
-rm "$HOME/.local/bin/odindeps"
-```
-
-On native Windows:
-
-```powershell
-Remove-Item (Join-Path $HOME ".local\bin\odindeps")
-Remove-Item (Join-Path $HOME ".local\bin\odindeps.cmd")
-```
-
-Uninstalling does not remove project dependencies or shared cache entries.
-Remove project materializations using the cleanup instructions in the relevant
-strategy guide. Before deleting `$HOME/.cache/odindeps`, confirm that no
-cache-backed project symlink still points into it.
-
-</details>
+Python 3.11 or newer is required. Git is also required for Git dependencies.
+See [Installation details](docs/installation.md) for `PATH`, Windows, upgrades,
+version-pinned downloads, source checkouts, and removal.
 
 ## Quick start
 
@@ -252,6 +128,10 @@ imports stable across nested packages; relative imports keep the build command
 short but couple imports to the source tree's physical layout.
 
 ## Strategy guides
+
+Start with the
+[complete collection-import example](https://github.com/hguerra/odindeps/tree/main/examples/odin-collection-import)
+for a realistic Odin project with formatting, tests, and smoke checks.
 
 | Strategy | Guide | Important effect |
 | --- | --- | --- |

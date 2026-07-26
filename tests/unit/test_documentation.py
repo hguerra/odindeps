@@ -23,17 +23,19 @@ class DocumentationTests(unittest.TestCase):
 
     def test_readme_documents_installation_and_removal(self) -> None:
         readme = ROOT.joinpath("README.md").read_text(encoding="utf-8")
+        install = readme[readme.index("## Install") : readme.index("## Quick start")]
+        shell_block = re.search(r"```sh\n(?P<script>.*?)\n```", install, re.DOTALL)
 
         self.assertIn("## Install", readme)
-        self.assertIn("<summary><strong>Remove odindeps</strong></summary>", readme)
+        self.assertIsNotNone(shell_block)
+        assert shell_block is not None
+        commands = [line for line in shell_block.group("script").splitlines() if line.strip()]
+        self.assertLessEqual(len(commands), 3)
         self.assertIn("$HOME/.local/bin", readme)
-        self.assertIn('version="v0.1.0"', readme)
-        self.assertIn("releases/download/$version", readme)
         self.assertIn("releases/latest/download/odindeps", readme)
-        self.assertIn("odindeps.sha256", readme)
-        self.assertIn("odindeps.cmd", readme)
-        self.assertIn("Get-FileHash", readme)
-        self.assertIn('mv "$staged_executable" "$install_directory/odindeps"', readme)
+        self.assertNotRegex(install, r"(?i)checksum|sha-?256|Get-FileHash")
+        self.assertIn("[Installation details](docs/installation.md)", install)
+        self.assertTrue(ROOT.joinpath("docs/installation.md").is_file())
 
     def test_every_documented_json_manifest_uses_the_current_vocabulary(self) -> None:
         documents = [ROOT / "README.md", *sorted((ROOT / "examples").glob("*/README.md"))]
@@ -57,6 +59,10 @@ class DocumentationTests(unittest.TestCase):
             with self.subTest(example=example):
                 self.assertIn(f"examples/{example}/README.md", readme)
                 self.assertTrue(ROOT.joinpath("examples", example, "README.md").is_file())
+        self.assertIn(
+            "https://github.com/hguerra/odindeps/tree/main/examples/odin-collection-import",
+            readme,
+        )
 
     def test_checked_in_odin_project_manifests_are_valid(self) -> None:
         projects = (
