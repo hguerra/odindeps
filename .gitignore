@@ -1,4 +1,4 @@
 .venv/
 __pycache__/
 *.py[cod]
-examples/odin-local-run/project/src/third_party/
+examples/odin-remote-clone/project/src/third_party/
